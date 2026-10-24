@@ -1,0 +1,33 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Python compilado y cachés
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Configuración y datos locales
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+*.db
+*.sqlite
+*.sqlite3
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+
+# Archivos locales del editor y del sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

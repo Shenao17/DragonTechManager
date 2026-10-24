@@ -1,0 +1,1 @@
+"""Conexión y persistencia SQLite."""
