@@ -68,7 +68,9 @@ class MainWindow(QMainWindow):
         self.schema_version = schema_version
         self.owns_connection = owns_connection
         self.setWindowTitle("DragonTech Manager")
-        self.setMinimumSize(1050, 700)
+        # Un mínimo alto impedía encajar la ventana en pantallas compactas.
+        # Las tablas conservan sus anchos legibles y desplazan horizontalmente.
+        self.setMinimumSize(760, 520)
         self.resize(1440, 920)
 
         self.customer_service = CustomerService(connection)

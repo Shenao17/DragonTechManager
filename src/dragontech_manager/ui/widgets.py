@@ -2,7 +2,9 @@
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
+    QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -87,23 +89,78 @@ class EmptyState(QFrame):
             self.action_button = None
 
 
-def build_table(columns: list[str]) -> QTableWidget:
-    table = QTableWidget(0, len(columns))
-    table.setHorizontalHeaderLabels(columns)
-    table.setAlternatingRowColors(True)
-    table.setShowGrid(False)
-    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-    table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-    table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-    table.verticalHeader().setVisible(False)
-    table.verticalHeader().setDefaultSectionSize(44)
-    table.horizontalHeader().setStretchLastSection(True)
-    table.setSortingEnabled(False)
-    return table
+class ReadableTableWidget(QTableWidget):
+    """Tabla de registro con columnas ajustables y una columna flexible."""
+
+    def __init__(
+        self,
+        columns: list[str],
+        *,
+        column_widths: list[int] | None = None,
+        flexible_column: int | None = None,
+    ) -> None:
+        super().__init__(0, len(columns))
+        self._flexible_column = flexible_column
+        self._preferred_widths = column_widths or [160] * len(columns)
+        self.setHorizontalHeaderLabels(columns)
+        self.setAlternatingRowColors(True)
+        self.setShowGrid(False)
+        self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.verticalHeader().setVisible(False)
+        self.verticalHeader().setDefaultSectionSize(44)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        header.setMinimumHeight(38)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setWordWrap(False)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        for column, width in enumerate(self._preferred_widths):
+            self.setColumnWidth(column, width)
+        self._fit_flexible_column()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_flexible_column()
+
+    def _fit_flexible_column(self) -> None:
+        column = self._flexible_column
+        if column is None or not 0 <= column < self.columnCount():
+            return
+        fixed_width = sum(
+            self.columnWidth(index)
+            for index in range(self.columnCount())
+            if index != column
+        )
+        preferred_width = self._preferred_widths[column]
+        target = max(preferred_width, self.viewport().width() - fixed_width)
+        if self.columnWidth(column) != target:
+            self.setColumnWidth(column, target)
+
+
+def build_table(
+    columns: list[str],
+    *,
+    column_widths: list[int] | None = None,
+    flexible_column: int | None = None,
+) -> QTableWidget:
+    return ReadableTableWidget(
+        columns,
+        column_widths=column_widths,
+        flexible_column=flexible_column,
+    )
 
 
 def set_cell(table: QTableWidget, row: int, column: int, value: object, *, muted: bool = False) -> None:
-    item = QTableWidgetItem("" if value is None else str(value))
+    display_value = "" if value is None else str(value)
+    item = QTableWidgetItem(display_value)
+    if display_value:
+        item.setToolTip(display_value)
     if muted:
         item.setForeground(Qt.GlobalColor.gray)
     table.setItem(row, column, item)

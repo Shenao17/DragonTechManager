@@ -48,6 +48,9 @@ def apply_theme(app: QApplication) -> None:
         QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
         QScrollBar::handle:vertical { background: #525B63; border-radius: 4px; min-height: 30px; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+        QScrollBar::handle:horizontal { background: #525B63; border-radius: 4px; min-width: 30px; }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
         QStatusBar { background: #1B1E23; color: #ABB3BC; border-top: 1px solid #34383E; }
         QDialog { background: #23262B; }
         QToolTip { color: #FFFFFF; background: #253342; border: 1px solid #5E9188; padding: 5px; }

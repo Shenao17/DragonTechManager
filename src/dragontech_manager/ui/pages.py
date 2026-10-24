@@ -63,7 +63,15 @@ def format_local_datetime(value: str | None) -> str:
 class RegistryPage(QWidget):
     request_create = Signal()
 
-    def __init__(self, columns: list[str], *, search_hint: str, parent=None) -> None:
+    def __init__(
+        self,
+        columns: list[str],
+        *,
+        search_hint: str,
+        column_widths: list[int],
+        flexible_column: int,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.page_size = 100
         self.offset = 0
@@ -88,7 +96,11 @@ class RegistryPage(QWidget):
         tools.addWidget(self.next)
         layout.addLayout(tools)
 
-        self.table = build_table(columns)
+        self.table = build_table(
+            columns,
+            column_widths=column_widths,
+            flexible_column=flexible_column,
+        )
         self.empty_title = "Todavía no hay registros"
         self.empty_state = EmptyState(
             self.empty_title,
@@ -165,6 +177,8 @@ class CustomerPage(RegistryPage):
         super().__init__(
             ["Cliente", "Teléfono / WhatsApp", "Correo", "Notas"],
             search_hint="Buscar nombre, teléfono, WhatsApp o correo…",
+            column_widths=[240, 185, 235, 260],
+            flexible_column=0,
             parent=parent,
         )
         self.service = service
@@ -188,8 +202,6 @@ class CustomerPage(RegistryPage):
             for column, value in enumerate(values):
                 set_cell(self.table, index, column, value, muted=(column == 3 and value == "—"))
             self.table.setRowHeight(index, 48)
-        self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setStretchLastSection(True)
 
     def create_dialog(self, parent=None) -> bool:
         dialog = CustomerDialog(self.service, parent)
@@ -205,6 +217,8 @@ class EquipmentPage(RegistryPage):
         super().__init__(
             ["Código", "Equipo", "Marca / modelo", "Serial", "Propietario"],
             search_hint="Buscar código, tipo, marca, modelo, serial o propietario…",
+            column_widths=[155, 170, 245, 190, 220],
+            flexible_column=4,
             parent=parent,
         )
         self.service = service
@@ -235,8 +249,6 @@ class EquipmentPage(RegistryPage):
             for column, value in enumerate(values):
                 set_cell(self.table, index, column, value, muted=(value == "—"))
             self.table.item(index, 0).setData(Qt.ItemDataRole.UserRole, equipment["id"])
-        self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setStretchLastSection(True)
 
     def create_dialog(self, parent=None) -> bool:
         customers = self.customer_service.list_customers(limit=500)
@@ -256,6 +268,8 @@ class OrdersPage(RegistryPage):
         super().__init__(
             ["Orden", "Equipo", "Cliente solicitante", "Recibida", "Estado", "Precio acordado"],
             search_hint="Filtra por estado de la orden…",
+            column_widths=[165, 160, 240, 175, 145, 190],
+            flexible_column=2,
             parent=parent,
         )
         self.service = service
@@ -298,8 +312,6 @@ class OrdersPage(RegistryPage):
             for column, value in enumerate(values):
                 set_cell(self.table, index, column, value)
             self.table.item(index, 4).setForeground(QColor(_STATUS_COLORS.get(order["estado"], "#FFFFFF")))
-        self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setStretchLastSection(True)
 
     def create_dialog(self, parent=None) -> bool:
         customers = self.customer_service.list_customers(limit=500)
