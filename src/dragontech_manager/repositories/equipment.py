@@ -46,7 +46,9 @@ class EquipmentRepository:
     def get(self, equipment_id: int) -> dict | None:
         return row_dict(
             self.connection.execute(
-                "SELECT * FROM equipos WHERE id = ?", (equipment_id,)
+                """SELECT e.*, c.nombre AS cliente_nombre FROM equipos e
+                   JOIN clientes c ON c.id = e.cliente_id WHERE e.id = ?""",
+                (equipment_id,),
             ).fetchone()
         )
 
@@ -55,5 +57,20 @@ class EquipmentRepository:
             """SELECT * FROM equipos WHERE cliente_id = ?
                ORDER BY creado_en_utc DESC, id DESC""",
             (customer_id,),
+        ).fetchall()
+        return rows_dict(rows)
+
+    def list_all(self, *, search: str | None, limit: int, offset: int) -> list[dict]:
+        rows = self.connection.execute(
+            """SELECT e.*, c.nombre AS cliente_nombre
+               FROM equipos e JOIN clientes c ON c.id = e.cliente_id
+               WHERE (? IS NULL OR e.codigo LIKE '%' || ? || '%' COLLATE NOCASE
+                      OR e.tipo LIKE '%' || ? || '%' COLLATE NOCASE
+                      OR e.marca LIKE '%' || ? || '%' COLLATE NOCASE
+                      OR e.modelo LIKE '%' || ? || '%' COLLATE NOCASE
+                      OR COALESCE(e.serial, '') LIKE '%' || ? || '%' COLLATE NOCASE
+                      OR c.nombre LIKE '%' || ? || '%' COLLATE NOCASE)
+               ORDER BY e.creado_en_utc DESC, e.id DESC LIMIT ? OFFSET ?""",
+            (search, search, search, search, search, search, search, limit, offset),
         ).fetchall()
         return rows_dict(rows)

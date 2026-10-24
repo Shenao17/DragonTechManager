@@ -7,7 +7,7 @@ from dragontech_manager.database.transactions import atomic
 from dragontech_manager.repositories.customers import CustomerRepository
 from dragontech_manager.repositories.equipment import EquipmentRepository
 from dragontech_manager.repositories.service_orders import ServiceOrderRepository
-from ._common import optional_text, positive_id, required_text, timestamp_and_business_year
+from ._common import optional_text, pagination, positive_id, required_text, timestamp_and_business_year
 from .errors import NotFoundError, translate_integrity_error
 
 
@@ -68,6 +68,13 @@ class EquipmentService:
         if self.customers.get(customer_id) is None:
             raise NotFoundError("No se encontró el cliente solicitado.")
         return self.equipment.list_for_customer(customer_id)
+
+    def list_equipment(
+        self, *, search: str | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict]:
+        search_value = optional_text(search, "La búsqueda")
+        limit, offset = pagination(limit, offset)
+        return self.equipment.list_all(search=search_value, limit=limit, offset=offset)
 
     def get_equipment_history(self, equipment_id: int) -> dict:
         equipment_id = positive_id(equipment_id, "El equipo")

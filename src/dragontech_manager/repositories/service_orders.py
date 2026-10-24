@@ -61,11 +61,24 @@ class ServiceOrderRepository:
         offset: int,
     ) -> list[dict]:
         rows = self.connection.execute(
-            """SELECT * FROM ordenes_servicio
-               WHERE (? IS NULL OR estado = ?)
-                 AND (? IS NULL OR cliente_id = ?)
-                 AND (? IS NULL OR equipo_id = ?)
-               ORDER BY recibido_en_utc DESC, id DESC LIMIT ? OFFSET ?""",
+            """SELECT o.*, c.nombre AS cliente_nombre, e.codigo AS equipo_codigo,
+                      e.tipo AS equipo_tipo,
+                      o.importe_inicial_cop + COALESCE((
+                          SELECT SUM(s.importe_propuesto_cop)
+                          FROM servicios_adicionales s
+                          JOIN decisiones_adicional d ON d.servicio_adicional_id = s.id
+                          WHERE s.orden_id = o.id AND d.decision = 'aprobado'
+                            AND d.id = (SELECT d2.id FROM decisiones_adicional d2
+                                        WHERE d2.servicio_adicional_id = s.id
+                                        ORDER BY d2.decidido_en_utc DESC, d2.id DESC LIMIT 1)
+                      ), 0) AS importe_acordado_cop
+               FROM ordenes_servicio o
+               JOIN clientes c ON c.id = o.cliente_id
+               JOIN equipos e ON e.id = o.equipo_id
+               WHERE (? IS NULL OR o.estado = ?)
+                 AND (? IS NULL OR o.cliente_id = ?)
+                 AND (? IS NULL OR o.equipo_id = ?)
+               ORDER BY o.recibido_en_utc DESC, o.id DESC LIMIT ? OFFSET ?""",
             (
                 state,
                 state,

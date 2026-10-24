@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from dragontech_manager.database.connection import open_database
 from dragontech_manager.database.migrations import migrate
 from dragontech_manager.services.customers import CustomerService
+from dragontech_manager.services.dashboard import DashboardService
 from dragontech_manager.services.equipment import EquipmentService
 from dragontech_manager.services.errors import (
     ConflictError,
@@ -75,6 +76,15 @@ class ServiceTests(unittest.TestCase):
         self.assertIsNone(second["serial"])
         self.assertEqual([row["id"] for row in self.equipment.list_equipment_for_customer(customer["id"])], [second["id"], first["id"]])
 
+    def test_equipment_search_returns_owner_and_supported_fields(self) -> None:
+        customer, _equipment = self.make_customer_and_equipment()
+        rows = self.equipment.list_equipment(search="SERIAL-TEST")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cliente_nombre"], customer["nombre"])
+        current_year = datetime.now(ZoneInfo("America/Bogota")).year
+        self.assertEqual(rows[0]["codigo"], f"EQ-{current_year:04d}-000001")
+        self.assertEqual(self.equipment.list_equipment(search="No coincide"), [])
+
     def test_equipment_rejects_missing_customer_and_invalid_type_without_consuming_sequence(self) -> None:
         with self.assertRaises(NotFoundError):
             self.equipment.register_equipment(99, "Portátil")
@@ -110,6 +120,27 @@ class ServiceTests(unittest.TestCase):
         history = self.equipment.get_equipment_history(equipment["id"])
         self.assertEqual(history["equipment"]["id"], equipment["id"])
         self.assertEqual([row["id"] for row in history["service_orders"]], [order["id"]])
+        listed = self.orders.list_orders()[0]
+        self.assertEqual(listed["cliente_nombre"], customer["nombre"])
+        self.assertEqual(listed["equipo_codigo"], equipment["codigo"])
+        self.assertEqual(listed["importe_acordado_cop"], 125000)
+
+    def test_dashboard_summary_uses_real_order_states_and_reports_empty_database(self) -> None:
+        dashboard = DashboardService(self.connection)
+        self.assertEqual(
+            dashboard.order_summary(),
+            {"pendientes": 0, "en_proceso": 0, "listas": 0, "entregadas": 0, "total": 0},
+        )
+        customer, equipment = self.make_customer_and_equipment()
+        self.orders.open_service_order(customer["id"], equipment["id"], "Pendiente")
+        self.connection.execute("UPDATE ordenes_servicio SET estado = 'en_proceso' WHERE id = 1")
+        self.orders.open_service_order(customer["id"], equipment["id"], "Lista")
+        self.connection.execute("UPDATE ordenes_servicio SET estado = 'lista' WHERE id = 2")
+        summary = dashboard.order_summary()
+        self.assertEqual(summary["pendientes"], 0)
+        self.assertEqual(summary["en_proceso"], 1)
+        self.assertEqual(summary["listas"], 1)
+        self.assertEqual(summary["total"], 2)
 
     def test_equipment_history_is_not_silently_limited_to_500_orders(self) -> None:
         customer, equipment = self.make_customer_and_equipment()
