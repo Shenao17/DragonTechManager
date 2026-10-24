@@ -17,7 +17,7 @@ def allocate_code(connection: sqlite3.Connection, entity: str, year: int) -> str
         prefix = _PREFIXES[entity]
     except KeyError as exc:
         raise ValueError(f"Entidad sin secuencia visible: {entity}") from exc
-    if not 1 <= year <= 9999:
+    if isinstance(year, bool) or not isinstance(year, int) or not 1 <= year <= 9999:
         raise ValueError("El año debe estar entre 0001 y 9999")
 
     row = connection.execute(

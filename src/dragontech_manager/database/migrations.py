@@ -46,6 +46,10 @@ def migrate(connection: sqlite3.Connection, migrations_dir: Path | None = None) 
     Debe ejecutarse sobre una conexión abierta mediante ``open_database``.
     El DDL y el registro de versión se confirman juntos por migración.
     """
+    if connection.in_transaction:
+        raise MigrationError(
+            "Confirme o revierta la transacción activa antes de ejecutar migraciones."
+        )
     directory = migrations_dir or _DEFAULT_MIGRATIONS
     files: list[tuple[int, str, Path]] = []
     for path in sorted(directory.glob("*.sql")):

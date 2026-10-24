@@ -13,8 +13,9 @@ Interfaz PySide6  ->  Servicios de aplicación  ->  Repositorios SQL  ->  SQLite
 ```
 
 - **Interfaz (`ui/`)**: ventanas, vistas y presentación de errores. Recoge datos y llama servicios; no ejecuta SQL ni calcula reglas financieras.
-- **Servicios (`services/`)**: casos de uso y reglas de negocio, como aprobar un adicional, registrar un pago o confirmar una salida de inventario. Coordina operaciones atómicas.
-- **Acceso a datos (`database/`)**: conexiones, futuras migraciones y repositorios/consultas SQL. No decide reglas de presentación.
+- **Acceso a datos (`database/`)**: conexiones, migraciones y utilidades SQL. No decide reglas de presentación.
+- **Repositorios (`repositories/`)**: SQL parametrizado sobre tablas reales y conversión uniforme de filas a diccionarios. No valida reglas de negocio ni controla transacciones.
+- **Servicios (`services/`)**: valida entradas y coordina repositorios, secuencias y transacciones. Hoy cubren clientes, equipos y órdenes. Publican errores de aplicación (`ValidationError`, `NotFoundError`, `ConflictError`, `DataIntegrityError`) sin exponer errores SQL crudos.
 - **Dominio (`domain/`)**: tipos, estados y validaciones compartidas cuando el crecimiento del código lo justifique. Evitar clases ceremoniales sin comportamiento.
 - **Pruebas (`tests/`)**: pruebas de servicios y persistencia con SQLite temporal o en memoria; pruebas de interfaz solo para comportamientos que aporten valor.
 
@@ -23,24 +24,39 @@ La dependencia apunta hacia dentro: la UI conoce servicios; los servicios usan r
 ## Estructura actual
 
 ```text
-src/dragontech_manager/
-├── __main__.py              # Permite iniciar con python -m dragontech_manager
-├── app.py                   # Inicialización Qt y ventana provisional
-└── database/
-    ├── connection.py        # Apertura y configuración común de SQLite
-    ├── migrations.py        # Aplicación atómica/versionada e integridad
-    ├── sequences.py         # Asignación transaccional de códigos visibles
-    └── migrations/
-        └── 0001_initial_schema.sql
+src/
+└── dragontech_manager/
+    ├── __main__.py          # Permite iniciar con python -m dragontech_manager
+    ├── app.py               # Inicialización Qt y ventana provisional
+    ├── database/
+    │   ├── connection.py
+    │   ├── migrations.py
+    │   ├── sequences.py
+    │   ├── transactions.py
+    │   └── migrations/
+    │       ├── 0001_initial_schema.sql
+    │       └── 0002_prevent_negative_stock_reversals.sql
+    ├── repositories/
+    │   ├── customers.py
+    │   ├── equipment.py
+    │   ├── service_orders.py
+    │   └── _rows.py
+    └── services/
+        ├── customers.py
+        ├── equipment.py
+        ├── service_orders.py
+        ├── errors.py
+        └── _common.py
 tests/
 ├── test_database.py         # Garantías básicas de conexión
-└── test_database_schema.py  # Esquema, migraciones y reglas SQLite
+├── test_database_schema.py  # Esquema, migraciones y reglas SQLite
+└── test_services.py         # Casos de uso y atomicidad
 docs/
 ├── architecture.md
 └── data-model.md
 ```
 
-Se crearán subpaquetes `services/`, `repositories/`, `domain/` y módulos de UI por área cuando empiece su implementación. No se crean directorios llenos de archivos vacíos. `data/` queda reservado para la base local; los datos reales se excluyen de Git.
+El dominio dedicado y los módulos de UI por área se añadirán cuando sean necesarios; no se crean directorios llenos de archivos vacíos. `data/` queda reservado para la base local; los datos reales se excluyen de Git.
 
 ## SQLite, transacciones y concurrencia
 
@@ -61,8 +77,8 @@ Las copias deben hacerse con la API de backup de SQLite o después de cerrar la 
 
 ## Migraciones
 
-`database/migrations/NNNN_nombre.sql` contiene cambios SQL ordenados y permanentes. `migrate(connection)` registra versión, nombre, SHA-256 y hora UTC en `schema_migrations`. Cada migración corre bajo `BEGIN IMMEDIATE`; DDL y registro de versión se confirman juntos. Una falla revierte esa migración. El ejecutor valida `PRAGMA integrity_check` y `PRAGMA foreign_key_check`, y rechaza cambios en archivos ya aplicados o versiones faltantes. No se editan migraciones publicadas: se agrega un número nuevo. No hay downgrade automático.
+`database/migrations/NNNN_nombre.sql` contiene cambios SQL ordenados y permanentes. `migrate(connection)` requiere una conexión sin transacción externa, registra versión, nombre, SHA-256 y hora UTC en `schema_migrations`. Cada migración corre bajo `BEGIN IMMEDIATE`; DDL y registro de versión se confirman juntos. Una falla revierte esa migración. El ejecutor valida `PRAGMA integrity_check` y `PRAGMA foreign_key_check`, y rechaza cambios en archivos ya aplicados o versiones faltantes. No se editan migraciones publicadas: se agrega un número nuevo. No hay downgrade automático.
 
 ## Estado de implementación
 
-La migración `0001_initial_schema.sql` crea el esquema relacional inicial y vistas de saldos/existencias. La conexión, el migrador y la reserva de códigos tienen pruebas automatizadas. Aún no hay repositorios, servicios comerciales, migraciones de versiones posteriores, archivo de base local ni pantallas de negocio.
+Las migraciones `0001_initial_schema.sql` y `0002_prevent_negative_stock_reversals.sql` crean el esquema inicial y añaden una protección de inventario. Existen servicios/repositorios para clientes, equipos y órdenes, además de pruebas de atomicidad y validación. Los demás módulos comerciales, transiciones de estados, interfaz funcional, backups y auditoría siguen pendientes.

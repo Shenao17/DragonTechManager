@@ -2,7 +2,7 @@
 
 DragonTech Manager es una aplicación de escritorio local para administrar las operaciones de DragonTech Care: clientes, equipos, órdenes de servicio, armados de PC, inventario, ventas y finanzas.
 
-El proyecto está en desarrollo. Ya incluye un esquema SQLite inicial versionado, infraestructura de conexión y migraciones, vistas de saldos/existencias y pruebas de integridad. Todavía no están implementados los módulos comerciales, repositorios ni servicios de negocio.
+El proyecto está en desarrollo. Incluye un esquema SQLite versionado, repositorios y servicios iniciales para clientes, equipos y órdenes, vistas de saldos/existencias y pruebas de integridad. Los demás módulos comerciales y la interfaz funcional siguen pendientes.
 
 ## Requisitos actuales
 

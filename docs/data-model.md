@@ -35,6 +35,7 @@ Todas las relaciones históricas usan `ON DELETE RESTRICT`; no hay cascadas que 
 
 - La existencia es `SUM(cantidad_delta)` y no se escribe a mano. `v_existencias` muestra existencia física, reservado y disponible.
 - La reserva no crea movimiento ni descuenta existencia. El trigger exige disponibilidad al reservar; la salida física inserta un movimiento negativo, requiere una reserva coincidente, no puede exceder la existencia, consume la reserva y no admite otro movimiento para la misma línea de origen. El costo del movimiento debe coincidir con el costo histórico de su línea de origen.
+- La migración `0002` impide que una reversión negativa reduzca la existencia por debajo de cero. Si una entrada errónea ya se consumió, primero debe corregirse la salida correspondiente; la reversión insegura se rechaza.
 - Las entradas de compra se registran al marcar la compra recibida, con una entrada positiva por detalle. Las salidas de venta, orden y armado son movimientos negativos. Los ajustes requieren motivo. Una corrección de movimiento es un movimiento compensatorio del mismo producto y magnitud; no se actualiza ni borra el original.
 - Costos de documentos y movimientos son instantáneas. Cambiar el costo actual del producto no reescribe esos registros.
 
@@ -44,10 +45,17 @@ La tabla `secuencias` tiene clave `(entidad, anio)` y siguiente ordinal hasta 99
 
 `migrate(connection)` aplica `NNNN_*.sql` en orden, registra versión/nombre/checksum SHA-256/hora UTC, revisa `integrity_check` y `foreign_key_check`, revierte DDL y versión juntos si falla y rechaza archivos editados o faltantes. No borra tablas ni ofrece downgrade. La restauración debe mantener la tabla `secuencias`, validar integridad y migrar antes de usar; no se deben editar simultáneamente dos copias restauradas.
 
+## Servicios y errores actuales
+
+`CustomerService` crea, obtiene y busca clientes. `EquipmentService` registra equipos de un cliente existente, consulta equipos y devuelve su historial técnico completo. `ServiceOrderService` abre órdenes para cliente/equipo existentes y permite listarlas por estado, cliente o equipo. El `cliente_id` de una orden conserva al solicitante en esa visita y puede diferir del cliente propietario actual del equipo. Los resultados de repositorio y servicio son diccionarios con las columnas de SQLite.
+
+Los servicios validan texto, IDs, paginación, estado e importes enteros dentro del rango de SQLite. Los códigos y sus filas se guardan juntos con `BEGIN IMMEDIATE`; si la inserción falla, tanto el registro como el ordinal se revierten. Los errores esperados se presentan como `ValidationError`, `NotFoundError`, `ConflictError` o `DataIntegrityError`.
+
 ## Límites actuales
 
-- No hay servicios/repositorios de negocio; reglas como aceptar cotización, recibir compra, reservar, cancelar, confirmar salida física y generar códigos deben llamarse dentro de transacciones cortas por la futura capa de servicios.
-- Las reservas no pueden exceder stock disponible, pero todavía no existe una rutina de servicio para hacer la reserva y confirmar su salida como una única operación coherente de interfaz.
+- Hay servicios/repositorios solo para clientes, equipos y órdenes; cotizaciones, pagos, compras, gastos e inventario aún no tienen casos de uso de aplicación.
+- El esquema no define una máquina de transiciones para estados de orden. El servicio solo permite consultar estados válidos y abre nuevas órdenes como `recibida`.
+- La reserva y la salida de inventario tienen protecciones SQL, pero todavía no hay un servicio que coordine esos flujos.
 - La recepción de inventario está modelada como una entrada por detalle al recibir la compra completa; no se implementan entregas parciales por línea.
 - Las reversiones financieras son por el valor total del pago original, no parciales.
-- No se implementan auditoría de cambios generales, fotos, backups, ni interfaces comerciales. Los importes se mantienen en rango entero SQLite; la futura capa de servicios debe validar posibles desbordamientos de sumas.
+- No se implementan auditoría de cambios generales, fotos, backups, ni interfaces comerciales. Los importes se mantienen en rango entero SQLite; los futuros servicios financieros deben validar posibles desbordamientos de sumas.

@@ -1,6 +1,7 @@
 """Integridad del esquema y garantías cubiertas por SQLite."""
 
 import sqlite3
+import shutil
 import tempfile
 import unittest
 from contextlib import closing
@@ -17,7 +18,7 @@ class DatabaseSchemaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.connection = open_database(":memory:")
         self.addCleanup(self.connection.close)
-        self.assertEqual(migrate(self.connection), 1)
+        self.assertEqual(migrate(self.connection), 2)
         self.connection.execute(
             "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES (?, ?, ?)",
             ("Cliente de prueba", UTC, UTC),
@@ -55,10 +56,10 @@ class DatabaseSchemaTests(unittest.TestCase):
             )
         }
         self.assertTrue(expected <= actual)
-        self.assertEqual(migrate(self.connection), 1)
+        self.assertEqual(migrate(self.connection), 2)
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
-            1,
+            2,
         )
 
     def test_foreign_keys_restrict_orphan_records_and_integrity_check_passes(self) -> None:
@@ -129,6 +130,10 @@ class DatabaseSchemaTests(unittest.TestCase):
                (orden_id, importe_cop, tipo, metodo, registrado_en_utc)
                VALUES (1, 6000, 'recibo', 'efectivo', ?)""", (UTC,)
         )
+        self.connection.execute(
+            "INSERT INTO ventas (codigo, cliente_id, fecha_venta, creado_en_utc) VALUES ('V-REVERSAL-TEST', 1, '2026-10-24', ?)",
+            (UTC,),
+        )
         self.assertEqual(
             self.connection.execute(
                 "SELECT saldo_pendiente_cop FROM v_saldos_ordenes WHERE orden_id = 1"
@@ -150,6 +155,13 @@ class DatabaseSchemaTests(unittest.TestCase):
                     reversa_pago_id, motivo)
                    VALUES (1, 5999, 'reversion', 'ajuste', ?, 1, 'Corrección')""", (UTC,)
             )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                """INSERT INTO pagos_clientes
+                   (venta_id, importe_cop, tipo, metodo, registrado_en_utc,
+                    reversa_pago_id, motivo)
+                   VALUES (1, 6000, 'reversion', 'ajuste', ?, 1, 'Destino incorrecto')""", (UTC,)
+            )
         self.connection.execute(
             """INSERT INTO pagos_clientes
                (orden_id, importe_cop, tipo, metodo, registrado_en_utc,
@@ -164,6 +176,13 @@ class DatabaseSchemaTests(unittest.TestCase):
         )
         with self.assertRaises(sqlite3.IntegrityError):
             self.connection.execute("DELETE FROM pagos_clientes WHERE id = 1")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                """INSERT INTO pagos_clientes
+                   (orden_id, importe_cop, tipo, metodo, registrado_en_utc,
+                    reversa_pago_id, motivo)
+                   VALUES (1, 6000, 'reversion', 'ajuste', ?, 1, 'Doble reversión')""", (UTC,)
+            )
 
     def test_additional_service_uses_latest_decision_and_requires_approval_for_part(self) -> None:
         self.connection.execute(
@@ -339,6 +358,71 @@ class DatabaseSchemaTests(unittest.TestCase):
                    VALUES (1, 1, 4, ?, ?)""", (UTC, UTC)
             )
 
+    def test_reversing_consumed_purchase_stock_cannot_create_negative_inventory(self) -> None:
+        self.connection.execute("INSERT INTO proveedores (nombre, creado_en_utc) VALUES ('Proveedor', ?)", (UTC,))
+        self.connection.execute(
+            "INSERT INTO compras (proveedor_id, fecha_compra, estado, creado_en_utc) VALUES (1, '2026-10-24', 'recibida', ?)",
+            (UTC,),
+        )
+        self.connection.execute(
+            "INSERT INTO compra_detalles (compra_id, producto_id, cantidad, costo_unitario_historico_cop) VALUES (1, 1, 5, 1000)"
+        )
+        self.connection.execute(
+            """INSERT INTO movimientos_inventario
+               (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
+                compra_detalle_id, creado_en_utc)
+               VALUES (1, 5, 1000, 'compra', 1, ?)""", (UTC,)
+        )
+        self.connection.execute(
+            "INSERT INTO ventas (codigo, cliente_id, fecha_venta, creado_en_utc) VALUES ('V-INV-1', 1, '2026-10-24', ?)",
+            (UTC,),
+        )
+        self.connection.execute(
+            """INSERT INTO venta_detalles
+               (venta_id, descripcion, cantidad, precio_unitario_cop,
+                costo_unitario_historico_cop, producto_id)
+               VALUES (1, 'Producto', 5, 2000, 1000, 1)"""
+        )
+        self.connection.execute(
+            """INSERT INTO reservas_inventario
+               (producto_id, venta_detalle_id, cantidad, creada_en_utc, actualizada_en_utc)
+               VALUES (1, 1, 5, ?, ?)""", (UTC, UTC)
+        )
+        self.connection.execute(
+            """INSERT INTO movimientos_inventario
+               (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
+                venta_detalle_id, creado_en_utc)
+               VALUES (1, -5, 1000, 'venta', 1, ?)""", (UTC,)
+        )
+        self.assertEqual(
+            self.connection.execute("SELECT existencia FROM v_existencias WHERE producto_id = 1").fetchone()[0],
+            0,
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                """INSERT INTO movimientos_inventario
+                   (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
+                    reversa_movimiento_id, creado_en_utc)
+                   VALUES (1, -5, 1000, 'reversion', 1, ?)""", (UTC,)
+            )
+        # Primero se compensa la salida; después se puede corregir la recepción.
+        self.connection.execute(
+            """INSERT INTO movimientos_inventario
+               (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
+                reversa_movimiento_id, creado_en_utc)
+               VALUES (1, 5, 1000, 'reversion', 2, ?)""", (UTC,)
+        )
+        self.connection.execute(
+            """INSERT INTO movimientos_inventario
+               (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
+                reversa_movimiento_id, creado_en_utc)
+               VALUES (1, -5, 1000, 'reversion', 1, ?)""", (UTC,)
+        )
+        self.assertEqual(
+            self.connection.execute("SELECT existencia FROM v_existencias WHERE producto_id = 1").fetchone()[0],
+            0,
+        )
+
     def test_failed_migration_rolls_back_ddl_and_version_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             migration_dir = Path(temp_dir)
@@ -367,6 +451,44 @@ class DatabaseSchemaTests(unittest.TestCase):
                 migration.write_text("CREATE TABLE sample (id INTEGER PRIMARY KEY, name TEXT);\n", encoding="utf-8")
                 with self.assertRaises(MigrationError):
                     migrate(connection, migration_dir)
+
+    def test_version_two_upgrades_a_version_one_database_without_rebuilding_it(self) -> None:
+        project_migrations = Path(__file__).parents[1] / "src/dragontech_manager/database/migrations"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            version_one_dir = Path(temp_dir)
+            shutil.copyfile(
+                project_migrations / "0001_initial_schema.sql",
+                version_one_dir / "0001_initial_schema.sql",
+            )
+            with closing(open_database(":memory:")) as connection:
+                self.assertEqual(migrate(connection, version_one_dir), 1)
+                connection.execute(
+                    "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES ('Preservado', ?, ?)",
+                    (UTC, UTC),
+                )
+                connection.commit()
+                self.assertEqual(migrate(connection, project_migrations), 2)
+                self.assertEqual(
+                    connection.execute("SELECT nombre FROM clientes").fetchone()[0],
+                    "Preservado",
+                )
+                self.assertIsNotNone(
+                    connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'movimientos_reversion_no_stock_negativo'"
+                    ).fetchone()
+                )
+
+    def test_migration_refuses_to_run_inside_a_caller_transaction(self) -> None:
+        with closing(open_database(":memory:")) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            with self.assertRaises(MigrationError):
+                migrate(connection)
+            connection.rollback()
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+                ).fetchone()
+            )
 
 
 if __name__ == "__main__":
