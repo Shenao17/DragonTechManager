@@ -20,16 +20,21 @@ Interfaz PySide6  ->  Servicios de aplicación  ->  Repositorios SQL  ->  SQLite
 
 La dependencia apunta hacia dentro: la UI conoce servicios; los servicios usan repositorios; los repositorios conocen SQLite. El dominio no debe depender de PySide6. Las transacciones se inician y confirman en el límite del caso de uso que requiere atomicidad, nunca repartidas entre widgets.
 
-## Estructura inicial
+## Estructura actual
 
 ```text
 src/dragontech_manager/
 ├── __main__.py              # Permite iniciar con python -m dragontech_manager
 ├── app.py                   # Inicialización Qt y ventana provisional
 └── database/
-    └── connection.py        # Apertura y configuración común de SQLite
+    ├── connection.py        # Apertura y configuración común de SQLite
+    ├── migrations.py        # Aplicación atómica/versionada e integridad
+    ├── sequences.py         # Asignación transaccional de códigos visibles
+    └── migrations/
+        └── 0001_initial_schema.sql
 tests/
-└── test_database.py         # Garantías básicas de conexión y claves foráneas
+├── test_database.py         # Garantías básicas de conexión
+└── test_database_schema.py  # Esquema, migraciones y reglas SQLite
 docs/
 ├── architecture.md
 └── data-model.md
@@ -39,21 +44,25 @@ Se crearán subpaquetes `services/`, `repositories/`, `domain/` y módulos de UI
 
 ## SQLite, transacciones y concurrencia
 
-- Cada conexión activa `PRAGMA foreign_keys = ON` y un `busy_timeout` acotado.
+- `open_database()` activa `PRAGMA foreign_keys = ON`, `busy_timeout` y `sqlite3.Row`.
 - Una operación que modifica varias tablas usa una sola transacción. Ejemplos: aprobar extras y actualizar el importe acordado, recibir una compra y crear movimientos, o confirmar una entrega y descontar componentes.
 - Se prefiere `BEGIN IMMEDIATE` en operaciones críticas de escritura para reservar el escritor antes de leer secuencias o existencias. SQLite serializa escritores; transacciones cortas limitan bloqueos.
-- Las tablas tendrán restricciones `UNIQUE`, `CHECK` y claves foráneas como última defensa además de validaciones de Python.
+- Las tablas aplican `UNIQUE`, `CHECK`, claves foráneas restrictivas y algunos triggers como última defensa además de validaciones de Python.
 - Dinero en COP se almacena como entero. No se almacenan saldos calculados como autoridad ni cantidades monetarias en `REAL`.
 - Los cambios financieros y movimientos de inventario se corrigen con registros compensatorios trazables, no borrando historia.
 
 ## Identificadores y copias de seguridad
 
-Las claves primarias internas son enteros separados de los códigos impresos. Una tabla de secuencias por entidad/año mantiene el próximo ordinal. La generación del código, el incremento de secuencia y el alta del registro ocurren en una transacción `BEGIN IMMEDIATE`; índices `UNIQUE` en el código visible resuelven cualquier colisión residual.
+Las claves primarias internas son enteros separados de los códigos impresos. La tabla `secuencias` por entidad/año mantiene el próximo ordinal. `allocate_code()` exige una transacción activa; el servicio que cree el registro debe reservar el código y dar de alta la fila en una transacción `BEGIN IMMEDIATE`. Los índices `UNIQUE` en el código visible rechazan cualquier colisión residual.
 
 Los códigos iniciales son `EQ-AAAA-######` y `OS-AAAA-######`. La política es una sola base activa en un computador. Al restaurar una copia se restaura también la tabla de secuencias. Si se reanuda el trabajo desde una copia antigua, comparar su secuencia con el mayor ordinal ya emitido y avanzar la secuencia antes de crear registros. No combinar dos bases activas editables: eso puede colisionar códigos y requiere una futura herramienta de consolidación.
 
-Las copias deben hacerse con la API de backup de SQLite o después de cerrar la aplicación, no copiando a ciegas una base abierta en modo WAL. La rutina de backup/recuperación se implementará en una etapa propia.
+Las copias deben hacerse con la API de backup de SQLite o después de cerrar la aplicación, no copiando a ciegas una base abierta en modo WAL. Al restaurar una copia antigua, validar `PRAGMA integrity_check`, `PRAGMA foreign_key_check` y migrar antes de abrir la aplicación. Las secuencias viajan en la misma base; revisar su ordinal antes de reanudar desde una copia antigua. La rutina de backup/recuperación se implementará en una etapa propia.
+
+## Migraciones
+
+`database/migrations/NNNN_nombre.sql` contiene cambios SQL ordenados y permanentes. `migrate(connection)` registra versión, nombre, SHA-256 y hora UTC en `schema_migrations`. Cada migración corre bajo `BEGIN IMMEDIATE`; DDL y registro de versión se confirman juntos. Una falla revierte esa migración. El ejecutor valida `PRAGMA integrity_check` y `PRAGMA foreign_key_check`, y rechaza cambios en archivos ya aplicados o versiones faltantes. No se editan migraciones publicadas: se agrega un número nuevo. No hay downgrade automático.
 
 ## Estado de implementación
 
-Actualmente se valida el arranque de Qt y la configuración de conexión SQLite. El esquema de negocio, migraciones, repositorios y servicios están pendientes; este documento es diseño, no una promesa de que las tablas ya existan.
+La migración `0001_initial_schema.sql` crea el esquema relacional inicial y vistas de saldos/existencias. La conexión, el migrador y la reserva de códigos tienen pruebas automatizadas. Aún no hay repositorios, servicios comerciales, migraciones de versiones posteriores, archivo de base local ni pantallas de negocio.
