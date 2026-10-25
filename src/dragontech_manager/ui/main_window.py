@@ -24,6 +24,10 @@ from dragontech_manager.services.dashboard import DashboardService
 from dragontech_manager.services.equipment import EquipmentService
 from dragontech_manager.services.errors import ServiceError
 from dragontech_manager.services.service_orders import ServiceOrderService
+from dragontech_manager.services.proposals import ProposalService
+from dragontech_manager.services.inventory import InventoryService
+from dragontech_manager.services.procurement import ProcurementService
+from dragontech_manager.services.sales import SalesService
 from dragontech_manager.services.updates import UpdateChecker
 from .pages import (
     ComingSoonPage,
@@ -34,6 +38,8 @@ from .pages import (
     InformationPage,
     OrdersPage,
 )
+from .sales import SalesWorkspacePage
+from .inventory import InventoryWorkspacePage
 from .order_details import OrderDetailDialog
 from .theme import apply_theme, load_theme_preference, save_theme_preference
 from .update_worker import UpdateCheckWorker
@@ -53,8 +59,8 @@ _SUBTITLES = {
     "customers": "Contactos y relaciones de servicio",
     "equipment": "Equipos registrados e historial técnico",
     "orders": "Recepción y seguimiento de visitas técnicas",
-    "sales": "Módulo comercial",
-    "inventory": "Productos y existencias",
+    "sales": "Propuestas, ventas y pagos de clientes",
+    "inventory": "Productos, proveedores y compras",
     "information": "Preferencias locales y datos de la aplicación",
 }
 
@@ -88,6 +94,10 @@ class MainWindow(QMainWindow):
         self.equipment_service = EquipmentService(connection)
         self.order_service = ServiceOrderService(connection)
         self.dashboard_service = DashboardService(connection)
+        self.proposal_service = ProposalService(connection)
+        self.inventory_service = InventoryService(connection)
+        self.procurement_service = ProcurementService(connection)
+        self.sales_service = SalesService(connection)
 
         shell = QWidget()
         shell.setObjectName("appShell")
@@ -109,24 +119,11 @@ class MainWindow(QMainWindow):
             "customers": CustomerPage(self.customer_service),
             "equipment": EquipmentPage(self.equipment_service, self.customer_service),
             "orders": OrdersPage(self.order_service, self.customer_service, self.equipment_service),
-            "sales": ComingSoonPage(
-                "Cotizaciones y ventas",
-                "El esquema de datos existe, pero todavía no hay operaciones comerciales reales en la aplicación.",
-                (
-                    "Preparar y consultar cotizaciones con sus conceptos y vigencia.",
-                    "Convertir una cotización aceptada en venta y registrar pagos parciales.",
-                    "Consultar saldos calculados a partir de los pagos trazables.",
-                ),
+            "sales": SalesWorkspacePage(
+                self.sales_service, self.proposal_service,
+                self.customer_service, self.inventory_service,
             ),
-            "inventory": ComingSoonPage(
-                "Inventario",
-                "El módulo todavía no ofrece formularios ni modifica existencias.",
-                (
-                    "Consultar productos, referencias y existencias actuales.",
-                    "Registrar compras, reservas y entradas o salidas confirmadas.",
-                    "Consultar proveedores, garantías y el historial de movimientos.",
-                ),
-            ),
+            "inventory": InventoryWorkspacePage(self.inventory_service, self.procurement_service),
             "information": InformationPage(schema_version, self.theme_name),
         }
         for page in self.pages.values():
@@ -145,6 +142,10 @@ class MainWindow(QMainWindow):
                 page.request_edit.connect(lambda record_id, page=page: self._run_edit(page, record_id))
             if isinstance(page, OrdersPage):
                 page.request_details.connect(self._show_order_detail)
+            if isinstance(page, SalesWorkspacePage):
+                page.request_create.connect(self._create_current_record)
+                page.request_details.connect(self._show_proposal_detail)
+                page.action_label_changed.connect(self.action_button.setText)
             if isinstance(page, InformationPage):
                 page.theme_changed.connect(self._change_theme)
                 page.update_requested.connect(self._check_for_updates)
@@ -239,9 +240,13 @@ class MainWindow(QMainWindow):
             "customers": "＋  Nuevo cliente",
             "equipment": "＋  Registrar equipo",
             "orders": "＋  Abrir orden",
+            "sales": "＋  Nueva propuesta",
         }
         if key in action_labels:
-            self.action_button.setText(action_labels[key])
+            label = action_labels[key]
+            if key == "sales" and self.pages[key].tabs.currentIndex() == 1:  # type: ignore[attr-defined]
+                label = "＋  Nueva venta"
+            self.action_button.setText(label)
             self.action_button.show()
         else:
             self.action_button.hide()
@@ -318,6 +323,20 @@ class MainWindow(QMainWindow):
             self.pages["orders"].refresh()
             self.pages["dashboard"].refresh()
             self.statusBar().showMessage("Orden actualizada y su historial fue registrado.", 7000)
+
+    def _show_proposal_detail(self, proposal_id: int) -> None:
+        page = self.pages["sales"]
+        try:
+            changed = page.open_details(proposal_id, self)  # type: ignore[attr-defined]
+        except (ServiceError, sqlite3.Error, OSError) as error:
+            self._show_error(
+                str(error) if isinstance(error, ServiceError)
+                else "No se pudo cargar o actualizar la propuesta en la base local."
+            )
+            return
+        if changed:
+            page.refresh()  # type: ignore[attr-defined]
+            self.statusBar().showMessage("Propuesta actualizada y actividad registrada.", 7000)
 
     def _change_theme(self, theme_name: str) -> None:
         try:

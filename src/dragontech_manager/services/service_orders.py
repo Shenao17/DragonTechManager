@@ -10,7 +10,7 @@ from dragontech_manager.repositories.customers import CustomerRepository
 from dragontech_manager.repositories.equipment import EquipmentRepository
 from dragontech_manager.repositories.service_orders import ServiceOrderRepository
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
-from .errors import NotFoundError, ValidationError, translate_integrity_error
+from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
 _ORDER_STATES = {
     "recibida", "diagnostico", "espera_aprobacion", "en_proceso",
@@ -27,6 +27,8 @@ _ORDER_TRANSITIONS = {
 }
 _BOGOTA = ZoneInfo("America/Bogota")
 _UNSET = object()
+_DECISIONS = {"aprobado", "rechazado"}
+_MAX_SQLITE_INTEGER = 9_223_372_036_854_775_807
 
 
 class ServiceOrderService:
@@ -111,16 +113,107 @@ class ServiceOrderService:
         allowed = set(_ORDER_TRANSITIONS[state])
         if state == "diagnostico":
             has_pending = self.orders.has_pending_additional_decisions(order["id"])
-            allowed = {"espera_aprobacion"} if has_pending else {"en_proceso"}
+            has_diagnosis = bool(order["diagnostico"].strip())
+            allowed = (
+                {"espera_aprobacion"}
+                if has_pending and has_diagnosis
+                else {"en_proceso"}
+                if not has_pending and has_diagnosis
+                else set()
+            )
         elif state == "espera_aprobacion":
             allowed = (
-                set()
-                if self.orders.has_pending_additional_decisions(order["id"])
-                else {"en_proceso"}
+                {"en_proceso"}
+                if not self.orders.has_pending_additional_decisions(order["id"])
+                and bool(order["diagnostico"].strip())
+                else set()
             )
         elif state == "en_proceso":
-            allowed = {"lista"} if order["trabajo_realizado"].strip() else set()
+            allowed = (
+                {"lista"}
+                if order["trabajo_realizado"].strip()
+                and order["pruebas_realizadas"].strip()
+                and not self.orders.has_pending_additional_decisions(order["id"])
+                else set()
+            )
         return sorted(allowed)
+
+    def list_additional_services(self, order_id: int) -> list[dict]:
+        order_id = positive_id(order_id, "La orden")
+        if self.orders.get(order_id) is None:
+            raise NotFoundError("No se encontró la orden solicitada.")
+        return self.orders.list_additional_services(order_id)
+
+    def list_additional_decision_history(self, additional_id: int) -> list[dict]:
+        additional_id = positive_id(additional_id, "El servicio adicional")
+        if self.orders.additional_service(additional_id) is None:
+            raise NotFoundError("No se encontró el servicio adicional solicitado.")
+        return self.orders.additional_decision_history(additional_id)
+
+    def propose_additional_service(
+        self, order_id: int, description: str, amount_cop: int
+    ) -> dict:
+        order_id = positive_id(order_id, "La orden")
+        description_value = required_text(description, "La descripción del servicio adicional")
+        amount = nonnegative_cop(amount_cop, "El precio propuesto")
+        if amount == 0:
+            raise ValidationError("El precio propuesto debe ser mayor que cero.")
+        timestamp, _ = timestamp_and_business_year()
+        try:
+            with atomic(self.connection):
+                order = self.orders.get(order_id)
+                if order is None:
+                    raise NotFoundError("No se encontró la orden solicitada.")
+                if order["estado"] not in {"diagnostico", "espera_aprobacion"}:
+                    raise ValidationError(
+                        "Los servicios adicionales se proponen durante el diagnóstico, antes de iniciar la reparación."
+                    )
+                if not order["diagnostico"].strip():
+                    raise ValidationError("Guarda el diagnóstico antes de proponer un servicio adicional.")
+                if self.orders.has_pending_duplicate_proposal(order_id, description_value, amount):
+                    raise ConflictError("Ya existe esta propuesta pendiente para la orden.")
+                return self.orders.create_additional_service(
+                    order_id, description_value, amount, timestamp
+                )
+        except sqlite3.IntegrityError as error:
+            raise translate_integrity_error(error) from error
+
+    def decide_additional_service(
+        self, additional_id: int, decision: str, evidence: str
+    ) -> dict:
+        additional_id = positive_id(additional_id, "El servicio adicional")
+        if not isinstance(decision, str) or decision not in _DECISIONS:
+            raise ValidationError("La decisión debe ser aprobación o rechazo.")
+        evidence_value = required_text(evidence, "La nota de confirmación del cliente")
+        timestamp, _ = timestamp_and_business_year()
+        try:
+            with atomic(self.connection):
+                additional = self.orders.additional_service(additional_id)
+                if additional is None:
+                    raise NotFoundError("No se encontró el servicio adicional solicitado.")
+                order = self.orders.get(additional["orden_id"])
+                if order["estado"] not in {"diagnostico", "espera_aprobacion"}:
+                    raise ValidationError(
+                        "La decisión debe registrarse antes de iniciar la reparación."
+                    )
+                if self.orders.additional_decision_history(additional_id):
+                    raise ConflictError(
+                        "Esta propuesta ya tiene una decisión registrada. Cree una nueva propuesta para una solicitud distinta; el historial no se reemplaza."
+                    )
+                if decision == "aprobado":
+                    current_detail = self.orders.get_detail(order["id"])
+                    current_amount = current_detail["importe_acordado_cop"]
+                    if additional["importe_propuesto_cop"] > _MAX_SQLITE_INTEGER - current_amount:
+                        raise ValidationError(
+                            "El importe acordado superaría el máximo que SQLite puede almacenar como entero COP."
+                        )
+                self.orders.add_additional_decision(
+                    additional_id, decision, timestamp, evidence_value
+                )
+                entries = self.orders.list_additional_services(order["id"])
+                return next(item for item in entries if item["id"] == additional_id)
+        except sqlite3.IntegrityError as error:
+            raise translate_integrity_error(error) from error
 
     def update_technical_details(
         self,
@@ -128,11 +221,17 @@ class ServiceOrderService:
         *,
         diagnosis: str,
         work_performed: str,
+        tests_performed: str | object = _UNSET,
         technician: str | None = None,
     ) -> dict:
         order_id = positive_id(order_id, "La orden")
         diagnosis_value = optional_text(diagnosis, "El diagnóstico", none_as_empty=True)
         work_value = optional_text(work_performed, "El trabajo realizado", none_as_empty=True)
+        tests_value = (
+            _UNSET
+            if tests_performed is _UNSET
+            else optional_text(tests_performed, "Las pruebas realizadas", none_as_empty=True)
+        )
         technician_value = optional_text(technician, "El técnico", none_as_empty=True)
         timestamp, _ = timestamp_and_business_year()
         try:
@@ -146,6 +245,11 @@ class ServiceOrderService:
                     order_id,
                     diagnosis=diagnosis_value,
                     work_performed=work_value,
+                    tests_performed=(
+                        current["pruebas_realizadas"]
+                        if tests_value is _UNSET
+                        else tests_value
+                    ),
                     technician=technician_value,
                     timestamp_utc=timestamp,
                 )
@@ -163,6 +267,7 @@ class ServiceOrderService:
         reason: str | None = None,
         diagnosis: str | object = _UNSET,
         work_performed: str | object = _UNSET,
+        tests_performed: str | object = _UNSET,
         technician: str | None | object = _UNSET,
     ) -> dict:
         order_id = positive_id(order_id, "La orden")
@@ -182,7 +287,12 @@ class ServiceOrderService:
                     raise NotFoundError("No se encontró la orden que se quiere actualizar.")
                 if current["estado"] in {"entregada", "cancelada"}:
                     raise ValidationError("Una orden cerrada no admite cambios de estado.")
-                if diagnosis is not _UNSET or work_performed is not _UNSET or technician is not _UNSET:
+                if (
+                    diagnosis is not _UNSET
+                    or work_performed is not _UNSET
+                    or tests_performed is not _UNSET
+                    or technician is not _UNSET
+                ):
                     self.orders.update_technical_details(
                         order_id,
                         diagnosis=(
@@ -195,6 +305,11 @@ class ServiceOrderService:
                             if work_performed is _UNSET
                             else optional_text(work_performed, "El trabajo realizado", none_as_empty=True)
                         ),
+                        tests_performed=(
+                            current["pruebas_realizadas"]
+                            if tests_performed is _UNSET
+                            else optional_text(tests_performed, "Las pruebas realizadas", none_as_empty=True)
+                        ),
                         technician=(
                             current["tecnico"]
                             if technician is _UNSET
@@ -206,9 +321,16 @@ class ServiceOrderService:
                 allowed = self.allowed_next_states(order_id)
                 if new_state not in allowed:
                     if current["estado"] == "en_proceso" and new_state == "lista":
-                        raise ValidationError(
-                            "Registra el trabajo realizado antes de marcar la orden como lista."
-                        )
+                        if not current["trabajo_realizado"].strip():
+                            raise ValidationError("Registra el trabajo realizado antes de marcar la orden como lista.")
+                        if not current["pruebas_realizadas"].strip():
+                            raise ValidationError("Registra las pruebas realizadas antes de marcar la orden como lista.")
+                    if current["estado"] == "diagnostico" and new_state == "en_proceso" and not current["diagnostico"].strip():
+                        raise ValidationError("Registra el diagnóstico antes de iniciar la reparación.")
+                    if current["estado"] == "diagnostico" and new_state == "espera_aprobacion" and not current["diagnostico"].strip():
+                        raise ValidationError("Registra el diagnóstico antes de solicitar aprobación de adicionales.")
+                    if current["estado"] == "espera_aprobacion" and new_state == "en_proceso" and not current["diagnostico"].strip():
+                        raise ValidationError("Registra el diagnóstico antes de iniciar la reparación.")
                     if current["estado"] == "diagnostico" and new_state == "en_proceso" and self.orders.has_pending_additional_decisions(order_id):
                         raise ValidationError(
                             "Hay servicios adicionales sin decisión; registra su aprobación o rechazo antes de continuar."

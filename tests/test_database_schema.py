@@ -18,7 +18,7 @@ class DatabaseSchemaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.connection = open_database(":memory:")
         self.addCleanup(self.connection.close)
-        self.assertEqual(migrate(self.connection), 3)
+        self.assertEqual(migrate(self.connection), 7)
         self.connection.execute(
             "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES (?, ?, ?)",
             ("Cliente de prueba", UTC, UTC),
@@ -46,7 +46,7 @@ class DatabaseSchemaTests(unittest.TestCase):
             "clientes", "equipos", "ordenes_servicio", "servicios_adicionales",
             "decisiones_adicional", "pagos_clientes", "cotizaciones",
             "cotizacion_detalles", "ventas", "venta_detalles", "armados_pc",
-            "armado_componentes", "productos", "reservas_inventario",
+            "armado_componentes", "historial_cotizaciones", "productos", "reservas_inventario",
             "movimientos_inventario", "proveedores", "compras", "compra_detalles",
             "pagos_proveedores", "gastos", "secuencias", "schema_migrations",
         }
@@ -56,10 +56,10 @@ class DatabaseSchemaTests(unittest.TestCase):
             )
         }
         self.assertTrue(expected <= actual)
-        self.assertEqual(migrate(self.connection), 3)
+        self.assertEqual(migrate(self.connection), 7)
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
-            3,
+            7,
         )
 
     def test_foreign_keys_restrict_orphan_records_and_integrity_check_passes(self) -> None:
@@ -340,15 +340,15 @@ class DatabaseSchemaTests(unittest.TestCase):
         self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                armado_componente_id, creado_en_utc)
-               VALUES (1, -2, 1000, 'armado', 1, ?)""", (UTC,)
+                armado_componente_id, creado_en_utc, motivo)
+               VALUES (1, -2, 1000, 'armado', 1, ?, 'Consumo de armado')""", (UTC,)
         )
         with self.assertRaises(sqlite3.IntegrityError):
             self.connection.execute(
                 """INSERT INTO movimientos_inventario
                    (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                    armado_componente_id, creado_en_utc)
-                   VALUES (1, -2, 1000, 'armado', 1, ?)""", (UTC,)
+                    armado_componente_id, creado_en_utc, motivo)
+                   VALUES (1, -2, 1000, 'armado', 1, ?, 'Consumo duplicado')""", (UTC,)
             )
         self.assertEqual(tuple(self.connection.execute("SELECT existencia, reservado, disponible FROM v_existencias").fetchone()), (3, 0, 3))
         with self.assertRaises(sqlite3.IntegrityError):
@@ -370,8 +370,8 @@ class DatabaseSchemaTests(unittest.TestCase):
         self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                compra_detalle_id, creado_en_utc)
-               VALUES (1, 5, 1000, 'compra', 1, ?)""", (UTC,)
+                compra_detalle_id, creado_en_utc, motivo)
+               VALUES (1, 5, 1000, 'compra', 1, ?, 'Recepción de compra')""", (UTC,)
         )
         self.connection.execute(
             "INSERT INTO ventas (codigo, cliente_id, fecha_venta, creado_en_utc) VALUES ('V-INV-1', 1, '2026-10-24', ?)",
@@ -391,8 +391,8 @@ class DatabaseSchemaTests(unittest.TestCase):
         self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                venta_detalle_id, creado_en_utc)
-               VALUES (1, -5, 1000, 'venta', 1, ?)""", (UTC,)
+                venta_detalle_id, creado_en_utc, motivo)
+               VALUES (1, -5, 1000, 'venta', 1, ?, 'Salida por venta')""", (UTC,)
         )
         self.assertEqual(
             self.connection.execute("SELECT existencia FROM v_existencias WHERE producto_id = 1").fetchone()[0],
@@ -402,21 +402,21 @@ class DatabaseSchemaTests(unittest.TestCase):
             self.connection.execute(
                 """INSERT INTO movimientos_inventario
                    (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                    reversa_movimiento_id, creado_en_utc)
-                   VALUES (1, -5, 1000, 'reversion', 1, ?)""", (UTC,)
+                    reversa_movimiento_id, creado_en_utc, motivo)
+                   VALUES (1, -5, 1000, 'reversion', 1, ?, 'Corrección')""", (UTC,)
             )
         # Primero se compensa la salida; después se puede corregir la recepción.
         self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                reversa_movimiento_id, creado_en_utc)
-               VALUES (1, 5, 1000, 'reversion', 2, ?)""", (UTC,)
+                reversa_movimiento_id, creado_en_utc, motivo)
+               VALUES (1, 5, 1000, 'reversion', 2, ?, 'Corrección')""", (UTC,)
         )
         self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                reversa_movimiento_id, creado_en_utc)
-               VALUES (1, -5, 1000, 'reversion', 1, ?)""", (UTC,)
+                reversa_movimiento_id, creado_en_utc, motivo)
+               VALUES (1, -5, 1000, 'reversion', 1, ?, 'Corrección')""", (UTC,)
         )
         self.assertEqual(
             self.connection.execute("SELECT existencia FROM v_existencias WHERE producto_id = 1").fetchone()[0],
@@ -467,7 +467,7 @@ class DatabaseSchemaTests(unittest.TestCase):
                     (UTC, UTC),
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, project_migrations), 3)
+                self.assertEqual(migrate(connection, project_migrations), 7)
                 self.assertEqual(
                     connection.execute("SELECT nombre FROM clientes").fetchone()[0],
                     "Preservado",
@@ -503,7 +503,7 @@ class DatabaseSchemaTests(unittest.TestCase):
                     (UTC, UTC, UTC),
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, project_migrations), 3)
+                self.assertEqual(migrate(connection, project_migrations), 7)
                 self.assertEqual(
                     connection.execute("SELECT estado FROM ordenes_servicio WHERE id=1").fetchone()[0],
                     "en_proceso",
@@ -514,6 +514,50 @@ class DatabaseSchemaTests(unittest.TestCase):
                 self.assertIsNone(event[0])
                 self.assertEqual(event[1], "en_proceso")
                 self.assertIn("transiciones anteriores no disponibles", event[2])
+
+    def test_test_results_migration_preserves_version_three_orders(self) -> None:
+        project_migrations = Path(__file__).parents[1] / "src/dragontech_manager/database/migrations"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_dir = Path(temp_dir) / "version_two"
+            old_dir.mkdir()
+            for name in (
+                "0001_initial_schema.sql",
+                "0002_prevent_negative_stock_reversals.sql",
+            ):
+                shutil.copyfile(project_migrations / name, old_dir / name)
+            with closing(open_database(":memory:")) as connection:
+                self.assertEqual(migrate(connection, old_dir), 2)
+                connection.execute(
+                    "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES ('Preservado', ?, ?)",
+                    (UTC, UTC),
+                )
+                connection.execute(
+                    "INSERT INTO equipos (codigo, cliente_id, tipo, creado_en_utc) VALUES ('EQ-2026-000001', 1, 'PC', ?)",
+                    (UTC,),
+                )
+                connection.execute(
+                    """INSERT INTO ordenes_servicio
+                       (codigo, cliente_id, equipo_id, recibido_en_utc, problema_reportado,
+                        diagnostico, trabajo_realizado, estado, importe_inicial_cop,
+                        creado_en_utc, actualizado_en_utc)
+                       VALUES ('OS-2026-000001', 1, 1, ?, 'Falla', 'Fuente dañada',
+                               'Se reemplazó la fuente', 'en_proceso', 0, ?, ?)""",
+                    (UTC, UTC, UTC),
+                )
+                connection.commit()
+                self.assertEqual(migrate(connection, project_migrations), 7)
+                order = connection.execute(
+                    "SELECT problema_reportado, diagnostico, trabajo_realizado, pruebas_realizadas, estado FROM ordenes_servicio WHERE id=1"
+                ).fetchone()
+                self.assertEqual(tuple(order), (
+                    "Falla", "Fuente dañada", "Se reemplazó la fuente", "", "en_proceso"
+                ))
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM historial_estados_orden WHERE orden_id=1"
+                    ).fetchone()[0],
+                    1,
+                )
 
     def test_migration_refuses_to_run_inside_a_caller_transaction(self) -> None:
         with closing(open_database(":memory:")) as connection:

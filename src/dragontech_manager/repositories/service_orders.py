@@ -98,20 +98,97 @@ class ServiceOrderRepository:
         ).fetchone()
         return bool(row[0])
 
+    def list_additional_services(self, order_id: int) -> list[dict]:
+        rows = self.connection.execute(
+            """SELECT s.id, s.orden_id, s.descripcion, s.importe_propuesto_cop,
+                      s.propuesto_en_utc, d.decision, d.decidido_en_utc, d.evidencia,
+                      CASE WHEN d.decision IS NULL THEN 'pendiente' ELSE d.decision END AS estado
+               FROM servicios_adicionales s
+               LEFT JOIN decisiones_adicional d ON d.id = (
+                   SELECT d2.id FROM decisiones_adicional d2
+                   WHERE d2.servicio_adicional_id = s.id
+                   ORDER BY d2.decidido_en_utc DESC, d2.id DESC LIMIT 1
+               )
+               WHERE s.orden_id = ?
+               ORDER BY s.propuesto_en_utc, s.id""",
+            (order_id,),
+        ).fetchall()
+        return rows_dict(rows)
+
+    def additional_service(self, additional_id: int) -> dict | None:
+        return row_dict(
+            self.connection.execute(
+                "SELECT * FROM servicios_adicionales WHERE id = ?", (additional_id,)
+            ).fetchone()
+        )
+
+    def additional_decision_history(self, additional_id: int) -> list[dict]:
+        rows = self.connection.execute(
+            """SELECT decision, decidido_en_utc, evidencia
+               FROM decisiones_adicional WHERE servicio_adicional_id = ?
+               ORDER BY decidido_en_utc, id""",
+            (additional_id,),
+        ).fetchall()
+        return rows_dict(rows)
+
+    def has_pending_duplicate_proposal(
+        self, order_id: int, description: str, amount_cop: int
+    ) -> bool:
+        row = self.connection.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM servicios_adicionales s
+                   WHERE s.orden_id = ? AND s.descripcion = ? COLLATE NOCASE
+                     AND s.importe_propuesto_cop = ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM decisiones_adicional d
+                         WHERE d.servicio_adicional_id = s.id
+                     )
+               )""",
+            (order_id, description, amount_cop),
+        ).fetchone()
+        return bool(row[0])
+
+    def create_additional_service(
+        self, order_id: int, description: str, amount_cop: int, timestamp_utc: str
+    ) -> dict:
+        row = self.connection.execute(
+            """INSERT INTO servicios_adicionales
+               (orden_id, descripcion, importe_propuesto_cop, propuesto_en_utc)
+               VALUES (?, ?, ?, ?) RETURNING *""",
+            (order_id, description, amount_cop, timestamp_utc),
+        ).fetchone()
+        return row_dict(row)
+
+    def add_additional_decision(
+        self,
+        additional_id: int,
+        decision: str,
+        timestamp_utc: str,
+        evidence: str,
+    ) -> None:
+        self.connection.execute(
+            """INSERT INTO decisiones_adicional
+               (servicio_adicional_id, decision, decidido_en_utc, evidencia)
+               VALUES (?, ?, ?, ?)""",
+            (additional_id, decision, timestamp_utc, evidence),
+        )
+
     def update_technical_details(
         self,
         order_id: int,
         *,
         diagnosis: str,
         work_performed: str,
+        tests_performed: str,
         technician: str,
         timestamp_utc: str,
     ) -> dict | None:
         row = self.connection.execute(
             """UPDATE ordenes_servicio
-               SET diagnostico = ?, trabajo_realizado = ?, tecnico = ?, actualizado_en_utc = ?
+               SET diagnostico = ?, trabajo_realizado = ?, pruebas_realizadas = ?,
+                   tecnico = ?, actualizado_en_utc = ?
                WHERE id = ? RETURNING *""",
-            (diagnosis, work_performed, technician, timestamp_utc, order_id),
+            (diagnosis, work_performed, tests_performed, technician, timestamp_utc, order_id),
         ).fetchone()
         return row_dict(row)
 

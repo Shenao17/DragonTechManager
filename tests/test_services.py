@@ -1,6 +1,7 @@
 """Pruebas aisladas de servicios y repositorios con SQLite en memoria."""
 
 import unittest
+import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -175,13 +176,23 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.orders.transition_order(order_id, "en_proceso")
         self.orders.transition_order(order_id, "diagnostico", reason="Equipo recibido")
+        self.assertEqual(self.orders.allowed_next_states(order_id), [])
+        with self.assertRaises(ValidationError):
+            self.orders.transition_order(order_id, "en_proceso")
+        self.orders.update_technical_details(
+            order_id, diagnosis="Fuente con falla", work_performed="", tests_performed="", technician="Técnico"
+        )
         self.assertEqual(self.orders.allowed_next_states(order_id), ["en_proceso"])
         self.orders.transition_order(order_id, "en_proceso")
         self.assertEqual(self.orders.allowed_next_states(order_id), [])
         with self.assertRaises(ValidationError):
             self.orders.transition_order(order_id, "lista")
         self.orders.update_technical_details(
-            order_id, diagnosis="Fuente con falla", work_performed="Se reemplazó la fuente", technician="Técnico"
+            order_id,
+            diagnosis="Fuente con falla",
+            work_performed="Se reemplazó la fuente",
+            tests_performed="Prueba de encendido y estabilidad aprobadas",
+            technician="Técnico",
         )
         self.assertEqual(self.orders.allowed_next_states(order_id), ["lista"])
         self.orders.transition_order(order_id, "lista")
@@ -198,6 +209,102 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.orders.update_technical_details(order_id, diagnosis="Editar", work_performed="", technician="")
 
+    def test_additional_service_proposal_decision_and_agreed_total_are_transactional(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "No enciende", initial_amount_cop=10000
+        )
+        with self.assertRaises(ValidationError):
+            self.orders.propose_additional_service(order["id"], "Cambio de fuente", 25000)
+        self.orders.transition_order(order["id"], "diagnostico")
+        self.orders.update_technical_details(
+            order["id"], diagnosis="Fuente dañada", work_performed="", tests_performed=""
+        )
+        proposal = self.orders.propose_additional_service(order["id"], "Cambio de fuente", 25000)
+        self.assertEqual(self.orders.list_additional_services(order["id"])[0]["estado"], "pendiente")
+        self.assertEqual(self.orders.get_order_detail(order["id"])["importe_acordado_cop"], 10000)
+        self.assertEqual(self.orders.allowed_next_states(order["id"]), ["espera_aprobacion"])
+        with self.assertRaises(ConflictError):
+            self.orders.propose_additional_service(order["id"], "Cambio de fuente", 25000)
+
+        self.orders.transition_order(order["id"], "espera_aprobacion")
+        approved = self.orders.decide_additional_service(
+            proposal["id"], "aprobado", "Cliente indicó aprobación por llamada; nota registrada por técnico."
+        )
+        self.assertEqual(approved["estado"], "aprobado")
+        self.assertEqual(len(self.orders.list_additional_decision_history(proposal["id"])), 1)
+        self.assertRegex(approved["decidido_en_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(self.orders.get_order_detail(order["id"])["importe_acordado_cop"], 35000)
+        self.assertEqual(self.orders.allowed_next_states(order["id"]), ["en_proceso"])
+        with self.assertRaises(ConflictError):
+            self.orders.decide_additional_service(proposal["id"], "aprobado", "Segundo clic")
+        with self.assertRaises(ConflictError):
+            self.orders.decide_additional_service(proposal["id"], "rechazado", "Cambio no soportado")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                "UPDATE servicios_adicionales SET importe_propuesto_cop = 30000 WHERE id = ?",
+                (proposal["id"],),
+            )
+        self.assertEqual(self.orders.get_order_detail(order["id"])["importe_acordado_cop"], 35000)
+
+        revised = self.orders.propose_additional_service(
+            order["id"], "Revisión adicional con alcance actualizado", 30000
+        )
+        self.assertEqual(revised["id"] != proposal["id"], True)
+        revised_state = next(
+            item for item in self.orders.list_additional_services(order["id"])
+            if item["id"] == revised["id"]
+        )
+        self.assertEqual(revised_state["estado"], "pendiente")
+        self.assertEqual(self.orders.get_order_detail(order["id"])["importe_acordado_cop"], 35000)
+
+    def test_additional_rejection_does_not_change_total_and_failed_decision_rolls_back(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Falla", initial_amount_cop=12000
+        )
+        self.orders.transition_order(order["id"], "diagnostico")
+        self.orders.update_technical_details(
+            order["id"], diagnosis="Diagnóstico", work_performed="", tests_performed=""
+        )
+        proposal = self.orders.propose_additional_service(order["id"], "Repuesto opcional", 5000)
+        self.orders.transition_order(order["id"], "espera_aprobacion")
+        rejected = self.orders.decide_additional_service(
+            proposal["id"], "rechazado", "Cliente indicó rechazo por WhatsApp."
+        )
+        self.assertEqual(rejected["estado"], "rechazado")
+        self.assertEqual(self.orders.get_order_detail(order["id"])["importe_acordado_cop"], 12000)
+        self.assertEqual(self.orders.allowed_next_states(order["id"]), ["en_proceso"])
+        with self.assertRaises(ConflictError):
+            self.orders.decide_additional_service(proposal["id"], "rechazado", "Decisión duplicada")
+
+        other = self.orders.propose_additional_service(order["id"], "Trabajo adicional", 2500)
+        self.connection.execute(
+            f"""CREATE TRIGGER fail_additional_decision BEFORE INSERT ON decisiones_adicional
+                WHEN NEW.servicio_adicional_id = {other['id']}
+                BEGIN SELECT RAISE(ABORT, 'forced decision failure'); END"""
+        )
+        with self.assertRaises(DataIntegrityError):
+            self.orders.decide_additional_service(other["id"], "aprobado", "Llamada registrada")
+        self.assertEqual(self.orders.list_additional_decision_history(other["id"]), [])
+        self.assertEqual(self.orders.get_order_detail(order["id"])["importe_acordado_cop"], 12000)
+
+    def test_approval_rejects_cop_total_overflow_without_recording_decision(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        maximum = 9_223_372_036_854_775_807
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Falla", initial_amount_cop=maximum
+        )
+        self.orders.transition_order(order["id"], "diagnostico")
+        self.orders.update_technical_details(
+            order["id"], diagnosis="Diagnóstico", work_performed="", tests_performed=""
+        )
+        proposal = self.orders.propose_additional_service(order["id"], "Repuesto", 1)
+        with self.assertRaises(ValidationError):
+            self.orders.decide_additional_service(proposal["id"], "aprobado", "Aprobación anotada")
+        self.assertEqual(self.orders.list_additional_decision_history(proposal["id"]), [])
+        self.assertEqual(self.orders.get_order_detail(order["id"])["importe_acordado_cop"], maximum)
+
     def test_order_approval_states_block_work_until_additional_decisions_exist(self) -> None:
         customer, equipment = self.make_customer_and_equipment()
         order = self.orders.open_service_order(customer["id"], equipment["id"], "Falla")
@@ -207,6 +314,10 @@ class ServiceTests(unittest.TestCase):
             (order["id"],),
         )
         self.orders.transition_order(order["id"], "diagnostico")
+        self.assertEqual(self.orders.allowed_next_states(order["id"]), [])
+        self.orders.update_technical_details(
+            order["id"], diagnosis="Diagnóstico", work_performed="", tests_performed=""
+        )
         self.assertEqual(self.orders.allowed_next_states(order["id"]), ["espera_aprobacion"])
         with self.assertRaises(ValidationError):
             self.orders.transition_order(order["id"], "en_proceso")
@@ -227,6 +338,9 @@ class ServiceTests(unittest.TestCase):
         customer, equipment = self.make_customer_and_equipment()
         order = self.orders.open_service_order(customer["id"], equipment["id"], "Falla")
         self.orders.transition_order(order["id"], "diagnostico")
+        self.orders.update_technical_details(
+            order["id"], diagnosis="Diagnóstico", work_performed="", tests_performed=""
+        )
         self.connection.execute(
             """CREATE TRIGGER fail_status_event BEFORE INSERT ON historial_estados_orden
                WHEN NEW.estado_nuevo = 'en_proceso'

@@ -2,7 +2,7 @@
 
 DragonTech Manager es una aplicación de escritorio local para administrar las operaciones de DragonTech Care: clientes, equipos, órdenes de servicio, armados de PC, inventario, ventas y finanzas.
 
-El proyecto está en desarrollo. Incluye un esquema SQLite versionado y una interfaz funcional para listar/buscar/crear/editar clientes y equipos, consultar su historial, y abrir/detallar órdenes con transiciones e historial. El dashboard resume órdenes reales, muestra las más recientes y permite iniciar altas reales. Cotizaciones, ventas, armados de PC, inventario y finanzas aún no tienen flujos de usuario completos.
+El proyecto está en desarrollo. Incluye una interfaz funcional para listar/buscar/crear/editar clientes y equipos, consultar su historial, abrir/detallar órdenes con transiciones e historial, crear y administrar propuestas, gestionar productos/proveedores/compras, confirmar ventas directas, convertir propuestas aceptadas y registrar pagos/reversiones de ventas. Armados de PC, cobro integrado de órdenes, gastos e informes financieros todavía no tienen flujos completos.
 
 ## Requisitos actuales
 
@@ -59,4 +59,4 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 - [Arquitectura](docs/architecture.md)
 - [Modelo de datos](docs/data-model.md)
 
-El esquema SQL inicial está en `src/dragontech_manager/database/migrations/0001_initial_schema.sql`; `0003` agrega el historial de estados de órdenes sin modificar registros existentes. Las migraciones aplicadas no deben editarse; los cambios futuros se agregan con un número de versión nuevo. La [auditoría y hoja de ruta](docs/data-model.md#auditoría-funcional-y-límites) clasifica los módulos y sus carencias actuales.
+El esquema SQL inicial está en `src/dragontech_manager/database/migrations/0001_initial_schema.sql`; las migraciones `0003`–`0007` agregan historiales, campos y restricciones de forma versionada. La migración `0007` habilita idempotencia persistente, vinculación segura de cotizaciones convertidas y conserva los saldos derivados. Las migraciones aplicadas no deben editarse; los cambios futuros se agregan con un número de versión nuevo. La [auditoría y hoja de ruta](docs/data-model.md#auditoría-funcional-y-límites) clasifica los módulos y sus carencias actuales.

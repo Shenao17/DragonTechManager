@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 # El runner puede definir DISPLAY aunque no haya un servidor accesible. Estas
 # pruebas de widgets no verifican el compositor y siempre deben ser headless.
@@ -12,6 +13,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QDialogButtonBox,
     QHeaderView,
     QLabel,
@@ -26,8 +28,16 @@ from dragontech_manager.database.migrations import migrate
 from dragontech_manager.services.customers import CustomerService
 from dragontech_manager.services.equipment import EquipmentService
 from dragontech_manager.services.service_orders import ServiceOrderService
+from dragontech_manager.services.proposals import ProposalService
+from dragontech_manager.services.inventory import InventoryService
+from dragontech_manager.services.procurement import ProcurementService
+from dragontech_manager.services.sales import SalesService
 from dragontech_manager.ui.dialogs import CustomerDialog, EquipmentDialog, ServiceOrderDialog
 from dragontech_manager.ui.order_details import OrderDetailDialog
+from dragontech_manager.ui.proposals import ProposalDialog, ProposalDetailsDialog
+from dragontech_manager.ui.inventory import InventoryWorkspacePage, ProductDialog
+from dragontech_manager.ui.procurement import PurchaseDialog, SupplierDialog
+from dragontech_manager.ui.sales import PaymentDialog, SaleDetailsDialog, SaleDialog
 from dragontech_manager.services.updates import UpdateCheckResult
 from dragontech_manager.ui.theme import apply_theme, load_theme_preference
 
@@ -62,7 +72,200 @@ class DesktopUiTests(unittest.TestCase):
         self.assertEqual(window._current_key, "dashboard")
         window._navigate("sales")
         self.assertEqual(window.section_title.text(), "Cotizaciones y ventas")
-        self.assertFalse(window.action_button.isVisible())
+        self.assertTrue(window.action_button.isVisible())
+        self.assertEqual(window.action_button.text(), "＋  Nueva propuesta")
+
+    def test_proposals_module_creates_lists_filters_and_opens_details(self) -> None:
+        customer = CustomerService(self.connection).create_customer("Cliente propuestas UI")
+        window = create_main_window(
+            self.connection, database_path=":memory:", schema_version=self.schema_version
+        )
+        self.addCleanup(window.close)
+        window._navigate("sales")
+        page = window.pages["sales"].proposals
+        self.assertGreaterEqual(page.table.minimumHeight(), 320)
+        self.assertEqual(page.table.verticalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.assertEqual(page.table.horizontalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.assertEqual(page.table.horizontalHeader().count(), 6)
+
+        def complete_proposal_form() -> None:
+            dialog = next(item for item in QApplication.topLevelWidgets() if isinstance(item, ProposalDialog))
+            dialog.customer.setCurrentIndex(dialog.customer.findData(customer["id"]))
+            dialog.expiry.setText("2030-05-20")
+            dialog._lines = [{"description": "Servicio y repuesto", "quantity": 2, "unit_price_cop": 75_000}]
+            dialog._save()
+
+        QTimer.singleShot(0, complete_proposal_form)
+        window.action_button.click()
+        proposal = self.connection.execute("SELECT * FROM cotizaciones").fetchone()
+        self.assertIsNotNone(proposal)
+        self.assertEqual(page.table.rowCount(), 1)
+        self.assertEqual(page.table.item(0, 1).text(), "Cliente propuestas UI")
+
+        self.assertEqual(page.table.item(0, 4).text(), "$ 150.000 COP")
+        self.assertIn("2030-05-20", page.table.item(0, 3).text())
+
+        page.search.setText(proposal["codigo"])
+        page.refresh()
+        self.assertEqual(page.table.rowCount(), 1)
+        page.state_filter.setCurrentIndex(page.state_filter.findData("enviada"))
+        self.assertEqual(page.table.rowCount(), 0)
+        page.state_filter.setCurrentIndex(page.state_filter.findData(None))
+        self.assertEqual(page.table.rowCount(), 1)
+        ProposalService(self.connection).transition_proposal(proposal["id"], "enviada")
+        page.refresh()
+        page.table.selectRow(0)
+
+        def close_details() -> None:
+            dialog = next(item for item in QApplication.topLevelWidgets()
+                          if isinstance(item, ProposalDetailsDialog)
+                          and proposal["codigo"] in item.windowTitle())
+            self.assertIn(proposal["codigo"], dialog.windowTitle())
+            self.assertGreater(dialog.size().height(), 500)
+            action_labels = [
+                dialog.actions.itemAt(index).widget().text()
+                for index in range(dialog.actions.count())
+                if dialog.actions.itemAt(index).widget() is not None
+            ]
+            self.assertIn("Registrar aceptación", action_labels)
+            self.assertNotIn("Marcar vencida", action_labels)
+            dialog.accept()
+
+        QTimer.singleShot(0, close_details)
+        page._open_selected()
+
+    def test_sales_workspace_confirms_direct_sale_and_updates_payment_status(self) -> None:
+        customer = CustomerService(self.connection).create_customer("Cliente ventas UI")
+        inventory = InventoryService(self.connection)
+        product = inventory.create_product(sku="UI-SKU", name="Producto UI",
+                                           unit_cost_cop=10_000, suggested_price_cop=25_000)
+        inventory.adjust_stock(product["id"], 2, unit_cost_cop=10_000, reason="Ingreso de prueba UI")
+        window = create_main_window(self.connection, database_path=":memory:",
+                                    schema_version=self.schema_version)
+        self.addCleanup(window.close)
+        page = window.pages["sales"]
+        self.assertEqual([page.tabs.tabText(i) for i in range(page.tabs.count())],
+                         ["Propuestas a clientes", "Ventas y pagos"])
+        page.tabs.setCurrentIndex(1)
+        self.assertEqual(window.action_button.text(), "＋  Nueva venta")
+
+        def confirm_sale() -> None:
+            dialog = next(widget for widget in QApplication.topLevelWidgets() if isinstance(widget, SaleDialog))
+            dialog.customer.setCurrentIndex(dialog.customer.findData(customer["id"]))
+            dialog._lines = [{"description": "Producto UI", "quantity": 1,
+                              "unit_price_cop": 25_000, "product_id": product["id"]}]
+            dialog._render()
+            dialog._save()
+
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            QTimer.singleShot(0, confirm_sale)
+            page.sales.create_button.click()
+        self.assertEqual(page.sales.table.rowCount(), 1)
+        self.assertEqual(page.sales.table.item(0, 6).text(), "Pendiente de pago")
+        sale_id = page.sales.table.item(0, 0).data(Qt.ItemDataRole.UserRole)
+        details = SaleDetailsDialog(SalesService(self.connection), sale_id)
+
+        def accept_default_payment() -> int:
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(PaymentDialog, "exec", autospec=True, side_effect=accept_default_payment), \
+             patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            details._payment()
+        self.assertEqual(details.sale["estado_cobro"], "completada")
+        self.assertEqual(details.sale["pagado_neto_cop"], 25_000)
+
+    def test_accepted_proposal_conversion_requires_ui_confirmation_and_refreshes_sales(self) -> None:
+        customer = CustomerService(self.connection).create_customer("Cliente conversión UI")
+        inventory = InventoryService(self.connection)
+        product = inventory.create_product(sku="QUOTE-UI", name="Artículo acordado",
+                                           unit_cost_cop=12_000, suggested_price_cop=20_000)
+        inventory.adjust_stock(product["id"], 1, unit_cost_cop=12_000, reason="Ingreso de prueba UI")
+        proposals = ProposalService(self.connection)
+        proposal = proposals.create_proposal(customer["id"], [{
+            "description": "Artículo acordado", "quantity": 1, "unit_price_cop": 20_000,
+            "product_id": product["id"],
+        }])
+        proposals.transition_proposal(proposal["id"], "enviada")
+        proposals.transition_proposal(proposal["id"], "aceptada")
+        window = create_main_window(self.connection, database_path=":memory:",
+                                    schema_version=self.schema_version)
+        self.addCleanup(window.close)
+        page = window.pages["sales"]
+
+        def convert_and_close() -> None:
+            dialog = next(widget for widget in QApplication.topLevelWidgets()
+                          if isinstance(widget, ProposalDetailsDialog))
+            self.assertTrue(any(dialog.actions.itemAt(i).widget().text() == "Convertir en venta"
+                                for i in range(dialog.actions.count())
+                                if dialog.actions.itemAt(i).widget()))
+            dialog._convert_to_sale()
+            dialog.accept()
+
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes), \
+             patch.object(QMessageBox, "information"):
+            QTimer.singleShot(0, convert_and_close)
+            self.assertTrue(page.open_details(proposal["id"], window))
+        page.tabs.setCurrentIndex(1)
+        page.refresh()
+        self.assertEqual(page.sales.table.rowCount(), 1)
+        self.assertEqual(page.sales.table.item(0, 1).text(), "Cliente conversión UI")
+        self.assertEqual(inventory.get_product(product["id"])["existencia"], 0)
+
+    def test_inventory_workspace_creates_product_supplier_and_draft_purchase(self) -> None:
+        window = create_main_window(
+            self.connection, database_path=":memory:", schema_version=self.schema_version
+        )
+        self.addCleanup(window.close)
+        window._navigate("inventory")
+        page = window.pages["inventory"]
+        self.assertIsInstance(page, InventoryWorkspacePage)
+        self.assertEqual(page.tabs.count(), 3)
+
+        def create_product() -> None:
+            dialog = next(item for item in QApplication.topLevelWidgets() if isinstance(item, ProductDialog))
+            dialog.sku.setText("UI-PROD-1")
+            dialog.name.setText("Producto visual de prueba")
+            dialog.category.setText("Accesorios")
+            dialog.unit_cost.setText("25000")
+            dialog.unit_price.setText("40000")
+            dialog._save()
+
+        QTimer.singleShot(0, create_product)
+        page.products._create()
+        product = self.connection.execute("SELECT * FROM productos WHERE sku='UI-PROD-1'").fetchone()
+        self.assertIsNotNone(product)
+        self.assertEqual(page.products.table.rowCount(), 1)
+
+        page.tabs.setCurrentWidget(page.suppliers)
+
+        def create_supplier() -> None:
+            dialog = next(item for item in QApplication.topLevelWidgets() if isinstance(item, SupplierDialog))
+            dialog.name.setText("Proveedor visual de prueba")
+            dialog.tax_id.setText("NIT-UI-1")
+            dialog.email.setText("ui@example.test")
+            dialog._save()
+
+        QTimer.singleShot(0, create_supplier)
+        page.suppliers._create()
+        supplier = self.connection.execute("SELECT * FROM proveedores WHERE identificacion_fiscal='NIT-UI-1'").fetchone()
+        self.assertIsNotNone(supplier)
+        self.assertEqual(page.suppliers.table.rowCount(), 1)
+
+        page.tabs.setCurrentWidget(page.purchases)
+
+        def create_purchase() -> None:
+            dialog = next(item for item in QApplication.topLevelWidgets() if isinstance(item, PurchaseDialog))
+            dialog.supplier.setCurrentIndex(dialog.supplier.findData(supplier["id"]))
+            dialog.lines = [{"product_id": product["id"], "quantity": 3,
+                             "unit_cost_cop": 25_000, "description": "Snapshot UI"}]
+            dialog._save()
+
+        QTimer.singleShot(0, create_purchase)
+        page.purchases._create()
+        purchase = self.connection.execute("SELECT * FROM compras").fetchone()
+        self.assertEqual(purchase["estado"], "borrador")
+        self.assertEqual(page.purchases.table.rowCount(), 1)
+        self.assertEqual(page.purchases.table.item(0, 5).text(), "$ 75.000 COP")
 
     def test_customer_form_creates_through_service_and_refreshes_page(self) -> None:
         window = create_main_window(
@@ -134,7 +337,7 @@ class DesktopUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "profile" / "dragontech.sqlite3"
             connection, version = initialize_database(database_path)
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 7)
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             connection.execute(
                 "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES ('Registro de prueba', '2026-10-24T15:30:00Z', '2026-10-24T15:30:00Z')"
@@ -144,7 +347,7 @@ class DesktopUiTests(unittest.TestCase):
 
             reopened, reopened_version = initialize_database(database_path)
             try:
-                self.assertEqual(reopened_version, 3)
+                self.assertEqual(reopened_version, 7)
                 self.assertEqual(reopened.execute("SELECT nombre FROM clientes").fetchone()[0], "Registro de prueba")
                 self.assertEqual(reopened.execute("SELECT COUNT(*) FROM clientes").fetchone()[0], 1)
             finally:
@@ -421,6 +624,9 @@ class DesktopUiTests(unittest.TestCase):
             [None, "diagnostico"],
         )
         service.transition_order(order["id"], "diagnostico")
+        service.update_technical_details(
+            order["id"], diagnosis="Se detectó fuente dañada", work_performed="", tests_performed=""
+        )
         dialog._reload()
         self.assertEqual(dialog.next_state.itemData(1), "en_proceso")
 
@@ -431,7 +637,10 @@ class DesktopUiTests(unittest.TestCase):
         self.assertIn("Guarda el trabajo realizado", dialog.transition_hint.text())
 
         service.update_technical_details(
-            order["id"], diagnosis="Diagnóstico", work_performed="Pruebas completadas"
+            order["id"],
+            diagnosis="Diagnóstico",
+            work_performed="Se reemplazó el componente",
+            tests_performed="Prueba funcional completada",
         )
         dialog._reload()
         self.assertEqual(dialog.next_state.itemData(1), "lista")
@@ -443,6 +652,72 @@ class DesktopUiTests(unittest.TestCase):
         self.assertEqual(dialog.next_state.count(), 1)
         self.assertFalse(dialog.next_state.isEnabled())
         self.assertIn("estados terminales", dialog.transition_hint.text())
+
+    def test_status_history_rows_expand_for_long_reasons_and_keep_full_tooltip(self) -> None:
+        customer = CustomerService(self.connection).create_customer("Cliente historial")
+        equipment = EquipmentService(self.connection).register_equipment(customer["id"], "Portátil")
+        service = ServiceOrderService(self.connection)
+        order = service.open_service_order(customer["id"], equipment["id"], "Falla")
+        service.transition_order(order["id"], "diagnostico", reason="Revisión inicial")
+        service.update_technical_details(
+            order["id"], diagnosis="Fuente defectuosa", work_performed="", tests_performed=""
+        )
+        long_reason = ("Cliente confirmó por llamada y se explicó el alcance del trabajo. " * 24).strip()
+        service.transition_order(order["id"], "en_proceso", reason=long_reason)
+        dialog = OrderDetailDialog(service, order["id"])
+        self.addCleanup(dialog.close)
+        dialog.resize(700, 560)
+        dialog.show()
+        self.app.processEvents()
+
+        self.assertEqual(dialog.history.rowCount(), 3)
+        self.assertEqual(
+            dialog.history.verticalHeader().sectionResizeMode(0),
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+        self.assertGreaterEqual(dialog.history.horizontalHeader().height(), 46)
+        self.assertEqual(dialog.history.item(2, 3).toolTip(), long_reason)
+        self.assertGreater(dialog.history.rowHeight(2), dialog.history.rowHeight(1))
+        self.assertGreater(dialog.history.visualRect(dialog.history.model().index(2, 3)).height(), 54)
+
+    def test_order_detail_proposes_and_records_additional_service_decision(self) -> None:
+        customer = CustomerService(self.connection).create_customer("Cliente adicionales UI")
+        equipment = EquipmentService(self.connection).register_equipment(customer["id"], "Portátil")
+        service = ServiceOrderService(self.connection)
+        order = service.open_service_order(
+            customer["id"], equipment["id"], "No enciende", initial_amount_cop=15000
+        )
+        service.transition_order(order["id"], "diagnostico")
+        service.update_technical_details(
+            order["id"], diagnosis="Fuente fallando", work_performed="", tests_performed=""
+        )
+        dialog = OrderDetailDialog(service, order["id"])
+        self.addCleanup(dialog.close)
+
+        dialog.proposal_description.setPlainText("Cambio de fuente")
+        dialog.proposal_amount.setText("24000")
+        dialog.propose_button.click()
+        self.assertEqual(dialog.additional_table.rowCount(), 1)
+        self.assertEqual(dialog.additional_table.item(0, 2).text(), "Pendiente de decisión")
+        self.assertEqual(dialog.price_label.text(), "$ 15.000 COP")
+        self.assertEqual(dialog.next_state.itemData(1), "espera_aprobacion")
+
+        service.transition_order(order["id"], "espera_aprobacion")
+        dialog._reload()
+        dialog.decision_evidence.setPlainText("Cliente indicó aprobación por llamada, según nota del técnico.")
+        with patch(
+            "dragontech_manager.ui.order_details.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            dialog.approve_additional_button.click()
+
+        self.assertEqual(dialog.additional_table.item(0, 2).text(), "Aprobado")
+        self.assertEqual(dialog.additional_history.rowCount(), 1)
+        self.assertEqual(dialog.price_label.text(), "$ 39.000 COP")
+        self.assertEqual(dialog.next_state.itemData(1), "en_proceso")
+        self.assertEqual(
+            service.get_order_detail(order["id"])["importe_acordado_cop"], 39000
+        )
 
     def test_dashboard_lists_recent_orders_and_quick_action_creates_real_customer(self) -> None:
         customer = CustomerService(self.connection).create_customer("Cliente de actividad")
