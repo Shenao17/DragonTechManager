@@ -4,14 +4,14 @@ import sys
 import sqlite3
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths
+from PySide6.QtCore import QSettings, QStandardPaths
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from dragontech_manager import __version__
 from dragontech_manager.database.connection import open_database
 from dragontech_manager.database.migrations import migrate
 from dragontech_manager.ui.main_window import MainWindow
-from dragontech_manager.ui.theme import apply_theme
+from dragontech_manager.ui.theme import apply_theme, load_theme_preference
 
 ORGANIZATION_NAME = "DragonTech"
 APPLICATION_NAME = "DragonTech Manager"
@@ -53,6 +53,7 @@ def create_main_window(
     *,
     database_path: str | Path | None = None,
     schema_version: int | None = None,
+    settings: QSettings | None = None,
 ) -> MainWindow:
     """Construye la ventana; sin conexión usa SQLite en memoria para pruebas."""
     owns_connection = connection is None
@@ -65,6 +66,7 @@ def create_main_window(
         database_path=path_text,
         schema_version=schema_version or 0,
         owns_connection=owns_connection,
+        settings=settings,
     )
 
 
@@ -73,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setApplicationName(APPLICATION_NAME)
     app.setApplicationVersion(__version__)
-    apply_theme(app)
+    apply_theme(app, load_theme_preference())
 
     database_path: Path | None = None
     connection: sqlite3.Connection | None = None

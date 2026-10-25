@@ -51,6 +51,103 @@ class ServiceOrderRepository:
             ).fetchone()
         )
 
+    def get_detail(self, order_id: int) -> dict | None:
+        row = self.connection.execute(
+            """SELECT o.*, c.nombre AS cliente_solicitante_nombre,
+                      c.telefono AS cliente_telefono, c.whatsapp AS cliente_whatsapp,
+                      e.codigo AS equipo_codigo, e.tipo AS equipo_tipo,
+                      e.marca AS equipo_marca, e.modelo AS equipo_modelo,
+                      e.serial AS equipo_serial, propietario.nombre AS propietario_nombre,
+                      o.importe_inicial_cop + COALESCE((
+                          SELECT SUM(s.importe_propuesto_cop)
+                          FROM servicios_adicionales s
+                          WHERE s.orden_id = o.id AND (
+                              SELECT d.decision FROM decisiones_adicional d
+                              WHERE d.servicio_adicional_id = s.id
+                              ORDER BY d.decidido_en_utc DESC, d.id DESC LIMIT 1
+                          ) = 'aprobado'
+                      ), 0) AS importe_acordado_cop
+               FROM ordenes_servicio o
+               JOIN clientes c ON c.id = o.cliente_id
+               JOIN equipos e ON e.id = o.equipo_id
+               JOIN clientes propietario ON propietario.id = e.cliente_id
+               WHERE o.id = ?""",
+            (order_id,),
+        ).fetchone()
+        return row_dict(row)
+
+    def status_history(self, order_id: int) -> list[dict]:
+        rows = self.connection.execute(
+            """SELECT estado_anterior, estado_nuevo, cambiado_en_utc, motivo
+               FROM historial_estados_orden
+               WHERE orden_id = ? ORDER BY cambiado_en_utc, id""",
+            (order_id,),
+        ).fetchall()
+        return rows_dict(rows)
+
+    def has_pending_additional_decisions(self, order_id: int) -> bool:
+        row = self.connection.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM servicios_adicionales s
+                   WHERE s.orden_id = ? AND NOT EXISTS (
+                       SELECT 1 FROM decisiones_adicional d
+                       WHERE d.servicio_adicional_id = s.id
+                   )
+               )""",
+            (order_id,),
+        ).fetchone()
+        return bool(row[0])
+
+    def update_technical_details(
+        self,
+        order_id: int,
+        *,
+        diagnosis: str,
+        work_performed: str,
+        technician: str,
+        timestamp_utc: str,
+    ) -> dict | None:
+        row = self.connection.execute(
+            """UPDATE ordenes_servicio
+               SET diagnostico = ?, trabajo_realizado = ?, tecnico = ?, actualizado_en_utc = ?
+               WHERE id = ? RETURNING *""",
+            (diagnosis, work_performed, technician, timestamp_utc, order_id),
+        ).fetchone()
+        return row_dict(row)
+
+    def update_status(
+        self,
+        order_id: int,
+        *,
+        previous_state: str,
+        new_state: str,
+        timestamp_utc: str,
+        delivery_date: str | None,
+    ) -> dict | None:
+        row = self.connection.execute(
+            """UPDATE ordenes_servicio
+               SET estado = ?, fecha_entrega = COALESCE(?, fecha_entrega), actualizado_en_utc = ?
+               WHERE id = ? AND estado = ? RETURNING *""",
+            (new_state, delivery_date, timestamp_utc, order_id, previous_state),
+        ).fetchone()
+        return row_dict(row)
+
+    def add_status_event(
+        self,
+        order_id: int,
+        *,
+        previous_state: str | None,
+        new_state: str,
+        timestamp_utc: str,
+        reason: str,
+    ) -> None:
+        self.connection.execute(
+            """INSERT INTO historial_estados_orden
+               (orden_id, estado_anterior, estado_nuevo, cambiado_en_utc, motivo)
+               VALUES (?, ?, ?, ?, ?)""",
+            (order_id, previous_state, new_state, timestamp_utc, reason),
+        )
+
     def list_orders(
         self,
         *,

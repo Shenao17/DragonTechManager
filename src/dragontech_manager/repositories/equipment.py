@@ -52,6 +52,38 @@ class EquipmentRepository:
             ).fetchone()
         )
 
+    def update(
+        self,
+        equipment_id: int,
+        *,
+        customer_id: int,
+        equipment_type: str,
+        brand: str,
+        model: str,
+        serial: str | None,
+        specifications: str,
+        accessories_received: str,
+        physical_condition: str,
+    ) -> dict | None:
+        row = self.connection.execute(
+            """UPDATE equipos
+               SET cliente_id = ?, tipo = ?, marca = ?, modelo = ?, serial = ?,
+                   especificaciones = ?, accesorios_recibidos = ?, estado_fisico = ?
+               WHERE id = ? RETURNING *""",
+            (
+                customer_id,
+                equipment_type,
+                brand,
+                model,
+                serial,
+                specifications,
+                accessories_received,
+                physical_condition,
+                equipment_id,
+            ),
+        ).fetchone()
+        return row_dict(row)
+
     def list_for_customer(self, customer_id: int) -> list[dict]:
         rows = self.connection.execute(
             """SELECT * FROM equipos WHERE cliente_id = ?

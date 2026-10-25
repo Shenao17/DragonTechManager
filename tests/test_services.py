@@ -63,6 +63,22 @@ class ServiceTests(unittest.TestCase):
             self.customers.get_customer(999)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM clientes").fetchone()[0], 0)
 
+    def test_customer_update_validates_and_preserves_omitted_optional_fields(self) -> None:
+        customer = self.customers.create_customer(
+            "Nombre original", phone="3001234567", email="original@example.test", notes="Nota"
+        )
+        updated = self.customers.update_customer(customer["id"], name="Nombre actualizado")
+        self.assertEqual(updated["nombre"], "Nombre actualizado")
+        self.assertEqual(updated["telefono"], "3001234567")
+        self.assertEqual(updated["correo"], "original@example.test")
+        self.assertEqual(updated["notas"], "Nota")
+        with self.assertRaises(ValidationError):
+            self.customers.update_customer(customer["id"], name=" ")
+        with self.assertRaises(ValidationError):
+            self.customers.update_customer(customer["id"], name="Nombre", email="correo inválido")
+        with self.assertRaises(NotFoundError):
+            self.customers.update_customer(999, name="Nombre")
+
     def test_register_equipment_with_optional_fields_and_list_by_customer(self) -> None:
         customer = self.customers.create_customer("Cliente de equipo")
         first = self.equipment.register_equipment(
@@ -84,6 +100,24 @@ class ServiceTests(unittest.TestCase):
         current_year = datetime.now(ZoneInfo("America/Bogota")).year
         self.assertEqual(rows[0]["codigo"], f"EQ-{current_year:04d}-000001")
         self.assertEqual(self.equipment.list_equipment(search="No coincide"), [])
+
+    def test_equipment_update_keeps_code_and_omitted_optional_fields(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        updated = self.equipment.update_equipment(
+            equipment["id"], equipment_type="Torre renovada", model="Modelo nuevo"
+        )
+        self.assertEqual(updated["codigo"], equipment["codigo"])
+        self.assertEqual(updated["cliente_id"], customer["id"])
+        self.assertEqual(updated["tipo"], "Torre renovada")
+        self.assertEqual(updated["marca"], "Marca de prueba")
+        self.assertEqual(updated["modelo"], "Modelo nuevo")
+        self.assertEqual(updated["serial"], "SERIAL-TEST")
+        with self.assertRaises(NotFoundError):
+            self.equipment.update_equipment(equipment["id"], customer_id=999)
+        with self.assertRaises(ValidationError):
+            self.equipment.update_equipment(equipment["id"], equipment_type=" ")
+        with self.assertRaises(NotFoundError):
+            self.equipment.update_equipment(999, equipment_type="Torre")
 
     def test_equipment_rejects_missing_customer_and_invalid_type_without_consuming_sequence(self) -> None:
         with self.assertRaises(NotFoundError):
@@ -124,6 +158,84 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(listed["cliente_nombre"], customer["nombre"])
         self.assertEqual(listed["equipo_codigo"], equipment["codigo"])
         self.assertEqual(listed["importe_acordado_cop"], 125000)
+        detail = self.orders.get_order_detail(order["id"])
+        self.assertEqual(detail["cliente_solicitante_nombre"], customer["nombre"])
+        self.assertEqual(detail["equipo_codigo"], equipment["codigo"])
+        self.assertEqual(detail["importe_acordado_cop"], 125000)
+        initial_events = self.orders.get_status_history(order["id"])
+        self.assertEqual(len(initial_events), 1)
+        self.assertIsNone(initial_events[0]["estado_anterior"])
+        self.assertEqual(initial_events[0]["estado_nuevo"], "recibida")
+
+    def test_order_transitions_work_history_and_delivery_date(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(customer["id"], equipment["id"], "No enciende")
+        order_id = order["id"]
+        self.assertEqual(self.orders.allowed_next_states(order_id), ["diagnostico"])
+        with self.assertRaises(ValidationError):
+            self.orders.transition_order(order_id, "en_proceso")
+        self.orders.transition_order(order_id, "diagnostico", reason="Equipo recibido")
+        self.assertEqual(self.orders.allowed_next_states(order_id), ["en_proceso"])
+        self.orders.transition_order(order_id, "en_proceso")
+        self.assertEqual(self.orders.allowed_next_states(order_id), [])
+        with self.assertRaises(ValidationError):
+            self.orders.transition_order(order_id, "lista")
+        self.orders.update_technical_details(
+            order_id, diagnosis="Fuente con falla", work_performed="Se reemplazó la fuente", technician="Técnico"
+        )
+        self.assertEqual(self.orders.allowed_next_states(order_id), ["lista"])
+        self.orders.transition_order(order_id, "lista")
+        self.assertEqual(self.orders.allowed_next_states(order_id), ["entregada"])
+        delivered = self.orders.transition_order(order_id, "entregada", reason="Entrega al solicitante")
+        self.assertRegex(delivered["fecha_entrega"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertEqual(self.orders.allowed_next_states(order_id), [])
+        events = self.orders.get_status_history(order_id)
+        self.assertEqual([event["estado_nuevo"] for event in events], [
+            "recibida", "diagnostico", "en_proceso", "lista", "entregada"
+        ])
+        self.assertEqual(events[-1]["motivo"], "Entrega al solicitante")
+        self.assertRegex(events[-1]["cambiado_en_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        with self.assertRaises(ValidationError):
+            self.orders.update_technical_details(order_id, diagnosis="Editar", work_performed="", technician="")
+
+    def test_order_approval_states_block_work_until_additional_decisions_exist(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(customer["id"], equipment["id"], "Falla")
+        self.connection.execute(
+            """INSERT INTO servicios_adicionales (orden_id, descripcion, importe_propuesto_cop, propuesto_en_utc)
+               VALUES (?, 'Repuesto pendiente', 20000, '2026-10-24T15:30:00Z')""",
+            (order["id"],),
+        )
+        self.orders.transition_order(order["id"], "diagnostico")
+        self.assertEqual(self.orders.allowed_next_states(order["id"]), ["espera_aprobacion"])
+        with self.assertRaises(ValidationError):
+            self.orders.transition_order(order["id"], "en_proceso")
+        self.orders.transition_order(order["id"], "espera_aprobacion")
+        self.assertEqual(self.orders.allowed_next_states(order["id"]), [])
+        self.connection.execute(
+            """INSERT INTO decisiones_adicional
+               (servicio_adicional_id, decision, decidido_en_utc, evidencia)
+               VALUES (1, 'aprobado', '2026-10-24T15:31:00Z', 'Aprobación de prueba')"""
+        )
+        self.assertEqual(self.orders.allowed_next_states(order["id"]), ["en_proceso"])
+        self.orders.transition_order(order["id"], "en_proceso")
+        self.assertEqual(self.orders.get_order(order["id"])["estado"], "en_proceso")
+        with self.assertRaises(ValidationError):
+            self.orders.transition_order(order["id"], "recibida")
+
+    def test_order_status_and_history_roll_back_together_if_history_write_fails(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(customer["id"], equipment["id"], "Falla")
+        self.orders.transition_order(order["id"], "diagnostico")
+        self.connection.execute(
+            """CREATE TRIGGER fail_status_event BEFORE INSERT ON historial_estados_orden
+               WHEN NEW.estado_nuevo = 'en_proceso'
+               BEGIN SELECT RAISE(ABORT, 'forced history failure'); END"""
+        )
+        with self.assertRaises(DataIntegrityError):
+            self.orders.transition_order(order["id"], "en_proceso")
+        self.assertEqual(self.orders.get_order(order["id"])["estado"], "diagnostico")
+        self.assertEqual(len(self.orders.get_status_history(order["id"])), 2)
 
     def test_dashboard_summary_uses_real_order_states_and_reports_empty_database(self) -> None:
         dashboard = DashboardService(self.connection)
@@ -141,6 +253,21 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(summary["en_proceso"], 1)
         self.assertEqual(summary["listas"], 1)
         self.assertEqual(summary["total"], 2)
+
+    def test_dashboard_recent_orders_returns_bounded_real_rows_newest_first(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        first = self.orders.open_service_order(customer["id"], equipment["id"], "Orden anterior")
+        second = self.orders.open_service_order(customer["id"], equipment["id"], "Orden reciente")
+        dashboard = DashboardService(self.connection)
+
+        rows = dashboard.recent_orders(limit=1)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], second["id"])
+        self.assertEqual(rows[0]["codigo"], second["codigo"])
+        self.assertNotEqual(rows[0]["id"], first["id"])
+        self.assertEqual(rows[0]["cliente_nombre"], customer["nombre"])
+        self.assertEqual(rows[0]["equipo_codigo"], equipment["codigo"])
 
     def test_equipment_history_is_not_silently_limited_to_500_orders(self) -> None:
         customer, equipment = self.make_customer_and_equipment()

@@ -1,6 +1,7 @@
 """Controles visuales reutilizables de la aplicación."""
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -28,15 +29,15 @@ class MetricCard(QFrame):
         layout.addWidget(stripe)
 
         title_label = QLabel(title.upper())
-        title_label.setStyleSheet("color: #AEB8C0; font-size: 8pt; font-weight: 700; letter-spacing: 1px;")
+        title_label.setObjectName("metricTitle")
         layout.addWidget(title_label)
 
         self.value_label = QLabel("—")
-        self.value_label.setStyleSheet("font-size: 28pt; font-weight: 700; color: #FFFFFF;")
+        self.value_label.setObjectName("metricValue")
         layout.addWidget(self.value_label)
 
         detail_label = QLabel(detail)
-        detail_label.setObjectName("muted")
+        detail_label.setObjectName("metricDetail")
         layout.addWidget(detail_label)
 
     def set_value(self, value: int) -> None:
@@ -60,11 +61,8 @@ class EmptyState(QFrame):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         mark = QLabel("DT")
+        mark.setObjectName("emptyMark")
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark.setStyleSheet(
-            "color: #8CB0A8; background: #2E3B3A; border: 1px solid #496A64; "
-            "border-radius: 24px; font-weight: 800; font-size: 12pt;"
-        )
         mark.setFixedSize(48, 48)
         layout.addWidget(mark, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -112,6 +110,7 @@ class ReadableTableWidget(QTableWidget):
         self.verticalHeader().setDefaultSectionSize(44)
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header.setStretchLastSection(False)
         header.setMinimumHeight(38)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -159,8 +158,9 @@ def build_table(
 def set_cell(table: QTableWidget, row: int, column: int, value: object, *, muted: bool = False) -> None:
     display_value = "" if value is None else str(value)
     item = QTableWidgetItem(display_value)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     if display_value:
         item.setToolTip(display_value)
     if muted:
-        item.setForeground(Qt.GlobalColor.gray)
+        item.setForeground(table.palette().color(QPalette.ColorRole.PlaceholderText))
     table.setItem(row, column, item)

@@ -34,6 +34,25 @@ class CustomerRepository:
             ).fetchone()
         )
 
+    def update(
+        self,
+        customer_id: int,
+        *,
+        name: str,
+        phone: str | None,
+        whatsapp: str | None,
+        email: str | None,
+        notes: str,
+        timestamp_utc: str,
+    ) -> dict | None:
+        row = self.connection.execute(
+            """UPDATE clientes
+               SET nombre = ?, telefono = ?, whatsapp = ?, correo = ?, notas = ?, actualizado_en_utc = ?
+               WHERE id = ? RETURNING *""",
+            (name, phone, whatsapp, email, notes, timestamp_utc, customer_id),
+        ).fetchone()
+        return row_dict(row)
+
     def list(self, *, search: str | None, limit: int, offset: int) -> list[dict]:
         rows = self.connection.execute(
             """SELECT * FROM clientes

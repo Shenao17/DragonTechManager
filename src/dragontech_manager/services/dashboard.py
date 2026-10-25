@@ -11,3 +11,6 @@ class DashboardService:
 
     def order_summary(self) -> dict[str, int]:
         return self.repository.order_summary()
+
+    def recent_orders(self, limit: int = 8) -> list[dict]:
+        return self.repository.recent_orders(limit)

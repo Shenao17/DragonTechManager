@@ -18,7 +18,7 @@ class DatabaseSchemaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.connection = open_database(":memory:")
         self.addCleanup(self.connection.close)
-        self.assertEqual(migrate(self.connection), 2)
+        self.assertEqual(migrate(self.connection), 3)
         self.connection.execute(
             "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES (?, ?, ?)",
             ("Cliente de prueba", UTC, UTC),
@@ -56,10 +56,10 @@ class DatabaseSchemaTests(unittest.TestCase):
             )
         }
         self.assertTrue(expected <= actual)
-        self.assertEqual(migrate(self.connection), 2)
+        self.assertEqual(migrate(self.connection), 3)
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
-            2,
+            3,
         )
 
     def test_foreign_keys_restrict_orphan_records_and_integrity_check_passes(self) -> None:
@@ -467,7 +467,7 @@ class DatabaseSchemaTests(unittest.TestCase):
                     (UTC, UTC),
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, project_migrations), 2)
+                self.assertEqual(migrate(connection, project_migrations), 3)
                 self.assertEqual(
                     connection.execute("SELECT nombre FROM clientes").fetchone()[0],
                     "Preservado",
@@ -477,6 +477,43 @@ class DatabaseSchemaTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'movimientos_reversion_no_stock_negativo'"
                     ).fetchone()
                 )
+
+    def test_status_history_migration_preserves_existing_orders_and_marks_unknown_past(self) -> None:
+        project_migrations = Path(__file__).parents[1] / "src/dragontech_manager/database/migrations"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_dir = Path(temp_dir) / "old"
+            old_dir.mkdir()
+            for name in ("0001_initial_schema.sql", "0002_prevent_negative_stock_reversals.sql"):
+                shutil.copyfile(project_migrations / name, old_dir / name)
+            with closing(open_database(":memory:")) as connection:
+                self.assertEqual(migrate(connection, old_dir), 2)
+                connection.execute(
+                    "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES ('Preservado', ?, ?)",
+                    (UTC, UTC),
+                )
+                connection.execute(
+                    "INSERT INTO equipos (codigo, cliente_id, tipo, creado_en_utc) VALUES ('EQ-2026-000001', 1, 'PC', ?)",
+                    (UTC,),
+                )
+                connection.execute(
+                    """INSERT INTO ordenes_servicio
+                       (codigo, cliente_id, equipo_id, recibido_en_utc, problema_reportado,
+                        estado, importe_inicial_cop, creado_en_utc, actualizado_en_utc)
+                       VALUES ('OS-2026-000001', 1, 1, ?, 'Falla', 'en_proceso', 0, ?, ?)""",
+                    (UTC, UTC, UTC),
+                )
+                connection.commit()
+                self.assertEqual(migrate(connection, project_migrations), 3)
+                self.assertEqual(
+                    connection.execute("SELECT estado FROM ordenes_servicio WHERE id=1").fetchone()[0],
+                    "en_proceso",
+                )
+                event = connection.execute(
+                    "SELECT estado_anterior, estado_nuevo, motivo FROM historial_estados_orden WHERE orden_id=1"
+                ).fetchone()
+                self.assertIsNone(event[0])
+                self.assertEqual(event[1], "en_proceso")
+                self.assertIn("transiciones anteriores no disponibles", event[2])
 
     def test_migration_refuses_to_run_inside_a_caller_transaction(self) -> None:
         with closing(open_database(":memory:")) as connection:

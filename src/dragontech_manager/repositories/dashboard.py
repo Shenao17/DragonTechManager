@@ -21,3 +21,18 @@ class DashboardRepository:
             key: int(row[key] or 0)
             for key in ("pendientes", "en_proceso", "listas", "entregadas", "total")
         }
+
+    def recent_orders(self, limit: int = 8) -> list[dict]:
+        limit = max(1, min(int(limit), 20))
+        rows = self.connection.execute(
+            """SELECT o.id, o.codigo, o.recibido_en_utc, o.estado,
+                      c.nombre AS cliente_nombre, e.codigo AS equipo_codigo,
+                      e.tipo AS equipo_tipo
+               FROM ordenes_servicio o
+               JOIN clientes c ON c.id = o.cliente_id
+               JOIN equipos e ON e.id = o.equipo_id
+               ORDER BY o.recibido_en_utc DESC, o.id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]

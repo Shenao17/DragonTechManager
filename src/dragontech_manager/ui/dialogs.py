@@ -6,12 +6,16 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QFormLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QScrollArea,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 import sqlite3
 
@@ -22,8 +26,8 @@ class FormDialog(QDialog):
     def __init__(self, title: str, description: str, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setMinimumWidth(500)
-        self.resize(560, 540)
+        self.setMinimumSize(680, 540)
+        self.resize(820, 720)
         self._dirty = False
         self.created_record: dict | None = None
 
@@ -38,14 +42,19 @@ class FormDialog(QDialog):
         subtitle.setWordWrap(True)
         outer.addWidget(subtitle)
 
-        self.form = QFormLayout()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        form_content = QWidget()
+        self.form = QFormLayout(form_content)
         self.form.setHorizontalSpacing(18)
-        self.form.setVerticalSpacing(13)
-        outer.addLayout(self.form)
+        self.form.setVerticalSpacing(18)
+        scroll.setWidget(form_content)
+        outer.addWidget(scroll, 1)
 
         self.error_label = QLabel()
+        self.error_label.setObjectName("formError")
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #F0A3A3; background: #382B2E; border-radius: 6px; padding: 9px;")
         self.error_label.hide()
         outer.addWidget(self.error_label)
 
@@ -85,9 +94,15 @@ class FormDialog(QDialog):
 
 
 class CustomerDialog(FormDialog):
-    def __init__(self, service, parent=None) -> None:
-        super().__init__("Nuevo cliente", "Registra la información de contacto que DragonTech Care necesita.", parent)
+    def __init__(self, service, parent=None, *, customer: dict | None = None) -> None:
+        editing = customer is not None
+        super().__init__(
+            "Editar cliente" if editing else "Nuevo cliente",
+            "Actualiza los datos del cliente. El historial relacionado se conserva.",
+            parent,
+        )
         self.service = service
+        self.customer_id = customer["id"] if customer else None
         self.name = QLineEdit()
         self.name.setPlaceholderText("Nombre completo o razón social")
         self.phone = QLineEdit()
@@ -98,7 +113,15 @@ class CustomerDialog(FormDialog):
         self.email.setPlaceholderText("correo@ejemplo.com")
         self.notes = QTextEdit()
         self.notes.setPlaceholderText("Notas opcionales")
-        self.notes.setMaximumHeight(88)
+        self.notes.setMinimumHeight(130)
+        self.notes.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        if customer:
+            self.name.setText(customer["nombre"])
+            self.phone.setText(customer["telefono"] or "")
+            self.whatsapp.setText(customer["whatsapp"] or "")
+            self.email.setText(customer["correo"] or "")
+            self.notes.setPlainText(customer["notas"] or "")
 
         self.form.addRow("Nombre *", self.name)
         self.form.addRow("Teléfono", self.phone)
@@ -112,13 +135,18 @@ class CustomerDialog(FormDialog):
 
     def submit(self) -> None:
         try:
-            self.created_record = self.service.create_customer(
-                self.name.text(),
-                phone=self.phone.text(),
-                whatsapp=self.whatsapp.text(),
-                email=self.email.text(),
-                notes=self.notes.toPlainText(),
-            )
+            values = {
+                "phone": self.phone.text(),
+                "whatsapp": self.whatsapp.text(),
+                "email": self.email.text(),
+                "notes": self.notes.toPlainText(),
+            }
+            if self.customer_id is None:
+                self.created_record = self.service.create_customer(self.name.text(), **values)
+            else:
+                self.created_record = self.service.update_customer(
+                    self.customer_id, name=self.name.text(), **values
+                )
         except ServiceError as error:
             self.show_error(str(error))
             return
@@ -129,9 +157,24 @@ class CustomerDialog(FormDialog):
 
 
 class EquipmentDialog(FormDialog):
-    def __init__(self, service, customers: list[dict], parent=None) -> None:
-        super().__init__("Registrar equipo", "El código del equipo se asignará automáticamente al guardar.", parent)
+    def __init__(
+        self,
+        service,
+        customers: list[dict],
+        parent=None,
+        *,
+        equipment: dict | None = None,
+    ) -> None:
+        editing = equipment is not None
+        description = (
+            f"Edita los datos actuales del equipo {equipment['codigo']}. El código público no se puede cambiar."
+            if equipment
+            else "El código del equipo se asignará automáticamente al guardar."
+        )
+        super().__init__("Editar equipo" if editing else "Registrar equipo", description, parent)
         self.service = service
+        self.equipment_id = equipment["id"] if equipment else None
+        self.public_code = equipment["codigo"] if equipment else None
         self.customer = QComboBox()
         for customer in customers:
             self.customer.addItem(customer["nombre"], customer["id"])
@@ -141,10 +184,23 @@ class EquipmentDialog(FormDialog):
         self.model = QLineEdit()
         self.serial = QLineEdit()
         self.specifications = QTextEdit()
-        self.specifications.setMaximumHeight(72)
+        self.specifications.setMinimumHeight(130)
+        self.specifications.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.accessories = QLineEdit()
         self.condition = QLineEdit()
 
+        if equipment:
+            self.equipment_type.setText(equipment["tipo"])
+            self.brand.setText(equipment["marca"] or "")
+            self.model.setText(equipment["modelo"] or "")
+            self.serial.setText(equipment["serial"] or "")
+            self.specifications.setPlainText(equipment["especificaciones"] or "")
+            self.accessories.setText(equipment["accesorios_recibidos"] or "")
+            self.condition.setText(equipment["estado_fisico"] or "")
+            self.customer.setCurrentIndex(self.customer.findData(equipment["cliente_id"]))
+
+        if equipment:
+            self.form.addRow("Código público", QLabel(equipment["codigo"]))
         self.form.addRow("Cliente propietario *", self.customer)
         self.form.addRow("Tipo *", self.equipment_type)
         self.form.addRow("Marca", self.brand)
@@ -166,16 +222,25 @@ class EquipmentDialog(FormDialog):
 
     def submit(self) -> None:
         try:
-            self.created_record = self.service.register_equipment(
-                self.customer.currentData(),
-                self.equipment_type.text(),
-                brand=self.brand.text(),
-                model=self.model.text(),
-                serial=self.serial.text(),
-                specifications=self.specifications.toPlainText(),
-                accessories_received=self.accessories.text(),
-                physical_condition=self.condition.text(),
-            )
+            values = {
+                "brand": self.brand.text(),
+                "model": self.model.text(),
+                "serial": self.serial.text(),
+                "specifications": self.specifications.toPlainText(),
+                "accessories_received": self.accessories.text(),
+                "physical_condition": self.condition.text(),
+            }
+            if self.equipment_id is None:
+                self.created_record = self.service.register_equipment(
+                    self.customer.currentData(), self.equipment_type.text(), **values
+                )
+            else:
+                self.created_record = self.service.update_equipment(
+                    self.equipment_id,
+                    customer_id=self.customer.currentData(),
+                    equipment_type=self.equipment_type.text(),
+                    **values,
+                )
         except ServiceError as error:
             self.show_error(str(error))
             return
@@ -208,7 +273,8 @@ class ServiceOrderDialog(FormDialog):
             self.equipment.addItem(label, row["id"])
         self.problem = QTextEdit()
         self.problem.setPlaceholderText("Describe el problema reportado por el cliente")
-        self.problem.setMaximumHeight(100)
+        self.problem.setMinimumHeight(150)
+        self.problem.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.amount = QLineEdit("0")
         self.amount.setPlaceholderText("0")
         self.amount.setValidator(
@@ -216,7 +282,8 @@ class ServiceOrderDialog(FormDialog):
         )
         self.diagnosis = QTextEdit()
         self.diagnosis.setPlaceholderText("Opcional al recibir el equipo")
-        self.diagnosis.setMaximumHeight(78)
+        self.diagnosis.setMinimumHeight(130)
+        self.diagnosis.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.technician = QLineEdit()
         self.technician.setPlaceholderText("Opcional")
 

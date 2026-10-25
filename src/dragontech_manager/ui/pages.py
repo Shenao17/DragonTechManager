@@ -1,21 +1,27 @@
 """Pantallas principales conectadas a los servicios existentes."""
 
 from datetime import datetime
+from platform import python_version
 import sqlite3
 from zoneinfo import ZoneInfo
 
+from PySide6 import __version__ as PYSIDE_VERSION
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QApplication,
     QFrame,
     QFormLayout,
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QVBoxLayout,
@@ -23,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from dragontech_manager.services.errors import ServiceError
+from dragontech_manager.services.updates import UpdateCheckResult
 from .dialogs import CustomerDialog, EquipmentDialog, ServiceOrderDialog
 from .widgets import EmptyState, MetricCard, build_table, set_cell
 
@@ -45,6 +52,15 @@ _STATUS_COLORS = {
     "entregada": "#89939C",
     "cancelada": "#C98282",
 }
+_STATUS_COLORS_LIGHT = {
+    "recibida": "#516170",
+    "diagnostico": "#355F7A",
+    "espera_aprobacion": "#7C5B20",
+    "en_proceso": "#3E5954",
+    "lista": "#36623B",
+    "entregada": "#5D6872",
+    "cancelada": "#853B3B",
+}
 
 
 def format_cop(amount: int | None) -> str:
@@ -62,6 +78,8 @@ def format_local_datetime(value: str | None) -> str:
 
 class RegistryPage(QWidget):
     request_create = Signal()
+    request_edit = Signal(int)
+    request_details = Signal(int)
 
     def __init__(
         self,
@@ -90,6 +108,16 @@ class RegistryPage(QWidget):
         self.page_label = QLabel("")
         self.page_label.setObjectName("muted")
         tools.addWidget(self.page_label)
+        self.edit_button = QPushButton("Editar seleccionado")
+        self.edit_button.setEnabled(False)
+        self.edit_button.hide()
+        self.edit_button.clicked.connect(self._emit_selected_edit)
+        tools.addWidget(self.edit_button)
+        self.details_button = QPushButton("Ver detalle")
+        self.details_button.setEnabled(False)
+        self.details_button.hide()
+        self.details_button.clicked.connect(self._emit_selected_details)
+        tools.addWidget(self.details_button)
         self.previous = QPushButton("‹  Anterior")
         self.next = QPushButton("Siguiente  ›")
         tools.addWidget(self.previous)
@@ -112,6 +140,7 @@ class RegistryPage(QWidget):
         self.stack.addWidget(self.empty_state)
         self.stack.addWidget(self.table)
         layout.addWidget(self.stack, 1)
+        self.table.itemSelectionChanged.connect(self._sync_action_buttons)
 
         self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
@@ -155,9 +184,43 @@ class RegistryPage(QWidget):
                 self.empty_state.title_label.setText(self.empty_title)
             self.stack.setCurrentWidget(self.empty_state)
         self._fill_rows(rows)
+        restore_id = getattr(self, "_restore_selection_id", None)
+        if restore_id is not None:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item and item.data(Qt.ItemDataRole.UserRole) == restore_id:
+                    self.table.selectRow(row)
+                    break
+            self._restore_selection_id = None
+        self._sync_action_buttons()
 
     def _fill_rows(self, rows: list[dict]) -> None:
         raise NotImplementedError
+
+    def _selected_record_id(self) -> int | None:
+        selected = self.table.selectionModel().selectedRows()
+        if not selected:
+            return None
+        item = self.table.item(selected[0].row(), 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _sync_action_buttons(self) -> None:
+        enabled = self._selected_record_id() is not None
+        self.edit_button.setEnabled(enabled)
+        self.details_button.setEnabled(enabled)
+
+    def _emit_selected_edit(self) -> None:
+        record_id = self._selected_record_id()
+        if record_id is not None:
+            self.request_edit.emit(record_id)
+
+    def _emit_selected_details(self) -> None:
+        record_id = self._selected_record_id()
+        if record_id is not None:
+            self.request_details.emit(record_id)
+
+    def restore_selection_after_refresh(self, record_id: int) -> None:
+        self._restore_selection_id = record_id
 
     def show_load_error(self, error: Exception) -> None:
         self.table.setRowCount(0)
@@ -183,6 +246,8 @@ class CustomerPage(RegistryPage):
         )
         self.service = service
         self.empty_title = "Aún no tienes clientes"
+        self.edit_button.show()
+        self.table.cellDoubleClicked.connect(self._edit_row)
         self.refresh()
 
     def refresh(self) -> None:
@@ -201,6 +266,7 @@ class CustomerPage(RegistryPage):
             values = (customer["nombre"], contact, customer["correo"] or "—", customer["notas"] or "—")
             for column, value in enumerate(values):
                 set_cell(self.table, index, column, value, muted=(column == 3 and value == "—"))
+            self.table.item(index, 0).setData(Qt.ItemDataRole.UserRole, customer["id"])
             self.table.setRowHeight(index, 48)
 
     def create_dialog(self, parent=None) -> bool:
@@ -208,6 +274,18 @@ class CustomerPage(RegistryPage):
         created = dialog.exec() == QDialog.DialogCode.Accepted
         self.last_created_record = dialog.created_record if created else None
         return created
+
+    def edit_dialog(self, customer_id: int, parent=None) -> bool:
+        customer = self.service.get_customer(customer_id)
+        dialog = CustomerDialog(self.service, parent, customer=customer)
+        updated = dialog.exec() == QDialog.DialogCode.Accepted
+        self.last_created_record = dialog.created_record if updated else None
+        return updated
+
+    def _edit_row(self, row: int, _column: int) -> None:
+        item = self.table.item(row, 0)
+        if item:
+            self.request_edit.emit(item.data(Qt.ItemDataRole.UserRole))
 
 
 class EquipmentPage(RegistryPage):
@@ -224,6 +302,7 @@ class EquipmentPage(RegistryPage):
         self.service = service
         self.customer_service = customer_service
         self.empty_title = "Aún no hay equipos registrados"
+        self.edit_button.show()
         self.table.cellDoubleClicked.connect(self._open_history)
         self.refresh()
 
@@ -257,6 +336,16 @@ class EquipmentPage(RegistryPage):
         self.last_created_record = dialog.created_record if created else None
         return created
 
+    def edit_dialog(self, equipment_id: int, parent=None) -> bool:
+        equipment = self.service.get_equipment(equipment_id)
+        customers = self.customer_service.list_customers(limit=500)
+        if all(row["id"] != equipment["cliente_id"] for row in customers):
+            customers.append(self.customer_service.get_customer(equipment["cliente_id"]))
+        dialog = EquipmentDialog(self.service, customers, parent, equipment=equipment)
+        updated = dialog.exec() == QDialog.DialogCode.Accepted
+        self.last_created_record = dialog.created_record if updated else None
+        return updated
+
     def _open_history(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)
         if item:
@@ -276,6 +365,8 @@ class OrdersPage(RegistryPage):
         self.customer_service = customer_service
         self.equipment_service = equipment_service
         self.empty_title = "Aún no hay órdenes de servicio"
+        self.details_button.show()
+        self.table.cellDoubleClicked.connect(self._show_details)
         self.search.setPlaceholderText("Filtrar por estado: recibida, en proceso, lista…")
         self.refresh()
 
@@ -311,7 +402,12 @@ class OrdersPage(RegistryPage):
             )
             for column, value in enumerate(values):
                 set_cell(self.table, index, column, value)
-            self.table.item(index, 4).setForeground(QColor(_STATUS_COLORS.get(order["estado"], "#FFFFFF")))
+            self.table.item(index, 0).setData(Qt.ItemDataRole.UserRole, order["id"])
+            application = QApplication.instance()
+            palette = _STATUS_COLORS_LIGHT if application and application.property("dragontechTheme") == "light" else _STATUS_COLORS
+            self.table.item(index, 4).setForeground(
+                QColor(palette.get(order["estado"], "#FFFFFF" if palette is _STATUS_COLORS else "#232226"))
+            )
 
     def create_dialog(self, parent=None) -> bool:
         customers = self.customer_service.list_customers(limit=500)
@@ -321,23 +417,38 @@ class OrdersPage(RegistryPage):
         self.last_created_record = dialog.created_record if created else None
         return created
 
+    def _show_details(self, row: int, _column: int) -> None:
+        item = self.table.item(row, 0)
+        if item:
+            self.request_details.emit(item.data(Qt.ItemDataRole.UserRole))
+
 
 class DashboardPage(QWidget):
     request_navigation = Signal(str)
+    request_create = Signal(str)
+    request_order_details = Signal(int)
 
     def __init__(self, service, parent=None) -> None:
         super().__init__(parent)
         self.service = service
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.content = QWidget()
+        layout = QVBoxLayout(self.content)
         layout.setContentsMargins(28, 26, 28, 28)
         layout.setSpacing(22)
+        scroll.setWidget(self.content)
+        outer.addWidget(scroll)
 
         welcome = QFrame()
         welcome.setProperty("role", "surface")
         welcome_layout = QVBoxLayout(welcome)
         welcome_layout.setContentsMargins(24, 20, 24, 20)
         eyebrow = QLabel("DRAGONTECH CARE  /  CENTRO DE OPERACIONES")
-        eyebrow.setStyleSheet("color: #8CB0A8; font-size: 8pt; font-weight: 700; letter-spacing: 1.4px;")
+        eyebrow.setObjectName("dashboardEyebrow")
         welcome_layout.addWidget(eyebrow)
         headline = QLabel("Todo el servicio, en un solo lugar.")
         headline.setStyleSheet("font-size: 20pt; font-weight: 700;")
@@ -353,61 +464,82 @@ class DashboardPage(QWidget):
             "pendientes": MetricCard("Pendientes", "Recibidas, diagnóstico o aprobación", "#D4B779"),
             "en_proceso": MetricCard("En proceso", "Trabajo técnico activo", "#5E9188"),
             "listas": MetricCard("Listas", "Preparadas para coordinar entrega", "#8DBB91"),
-            "entregadas": MetricCard("Entregadas", "Órdenes cerradas con el cliente", "#778A9C"),
         }
         for column, card in enumerate(self.cards.values()):
             cards.addWidget(card, 0, column)
             cards.setColumnStretch(column, 1)
         layout.addLayout(cards)
 
-        lower = QHBoxLayout()
         activity = QFrame()
         activity.setProperty("role", "surface")
         activity_layout = QVBoxLayout(activity)
-        activity_layout.setContentsMargins(20, 18, 20, 18)
-        title = QLabel("Actividad de servicio")
-        title.setStyleSheet("font-size: 13pt; font-weight: 700;")
+        activity_layout.setContentsMargins(20, 18, 20, 20)
+        activity_layout.setSpacing(14)
+        title = QLabel("Órdenes recientes")
+        title.setStyleSheet("font-size: 14pt; font-weight: 700;")
         activity_layout.addWidget(title)
-        self.activity_state = EmptyState(
-            "Todavía no hay órdenes",
-            "Las órdenes reales aparecerán aquí cuando se registren en el sistema.",
-            action_text="Ir a órdenes",
-            action=lambda: self.request_navigation.emit("orders"),
+        self.recent_table = build_table(
+            ["Orden", "Cliente", "Equipo", "Recibida", "Estado"],
+            column_widths=[175, 250, 225, 185, 165],
+            flexible_column=1,
         )
+        self.recent_table.setMinimumHeight(270)
+        self.recent_table.cellDoubleClicked.connect(self._open_recent_order)
+        activity_layout.addWidget(self.recent_table)
+        self.activity_state = EmptyState(
+            "Todavía no hay actividad de servicio",
+            "Al abrir una orden real, aquí aparecerán el cliente, el equipo, la fecha y el estado actual.",
+        )
+        self.activity_state.setMinimumHeight(210)
+        self.activity_state.hide()
         activity_layout.addWidget(self.activity_state)
-        lower.addWidget(activity, 3)
+        activity_actions = QHBoxLayout()
+        activity_actions.addStretch(1)
+        self.open_recent_button = QPushButton("Ver detalle de la orden seleccionada")
+        self.open_recent_button.setEnabled(False)
+        self.open_recent_button.clicked.connect(self._emit_selected_order)
+        activity_actions.addWidget(self.open_recent_button)
+        activity_layout.addLayout(activity_actions)
+        layout.addWidget(activity)
 
         shortcuts = QFrame()
         shortcuts.setProperty("role", "surface")
         shortcut_layout = QVBoxLayout(shortcuts)
-        shortcut_layout.setContentsMargins(20, 18, 20, 18)
-        shortcut_title = QLabel("Accesos rápidos")
-        shortcut_title.setStyleSheet("font-size: 13pt; font-weight: 700;")
+        shortcut_layout.setContentsMargins(20, 18, 20, 20)
+        shortcut_layout.setSpacing(12)
+        shortcut_title = QLabel("Acciones rápidas")
+        shortcut_title.setStyleSheet("font-size: 14pt; font-weight: 700;")
         shortcut_layout.addWidget(shortcut_title)
-        for text, destination, hint in (
-            ("Clientes", "customers", "Buscar o crear un cliente"),
-            ("Equipos", "equipment", "Registrar un equipo recibido"),
-            ("Órdenes", "orders", "Abrir y consultar servicios"),
-        ):
-            button = QPushButton(f"{text}    ›\n{hint}")
-            button.setMinimumHeight(58)
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(14)
+        actions.setVerticalSpacing(12)
+        self.quick_action_buttons: dict[str, QPushButton] = {}
+        for column, (text, destination, hint) in enumerate((
+            ("＋  Crear cliente", "customers", "Registrar datos de contacto"),
+            ("＋  Registrar equipo", "equipment", "Asociarlo a un cliente"),
+            ("＋  Abrir orden", "orders", "Crear una visita técnica"),
+        )):
+            button = QPushButton(f"{text}\n{hint}")
+            button.setObjectName("quickActionButton")
+            button.setMinimumHeight(76)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setStyleSheet(
-                "QPushButton { text-align: left; background: #252A30; border: 1px solid #373D44; "
-                "border-radius: 8px; padding: 8px 12px; font-weight: 700; } "
-                "QPushButton:hover { background: #30383D; border-color: #5E9188; }"
-            )
             button.clicked.connect(
-                lambda _checked=False, target=destination: self.request_navigation.emit(target)
+                lambda _checked=False, target=destination: self.request_create.emit(target)
             )
-            shortcut_layout.addWidget(button)
-        shortcut_layout.addStretch(1)
-        lower.addWidget(shortcuts, 2)
-        layout.addLayout(lower, 1)
+            self.quick_action_buttons[destination] = button
+            actions.addWidget(button, 0, column)
+            actions.setColumnStretch(column, 1)
+        shortcut_layout.addLayout(actions)
+        layout.addWidget(shortcuts)
+        layout.addStretch(1)
+        self.recent_table.itemSelectionChanged.connect(self._sync_recent_action)
+        self.refresh()
 
     def refresh(self) -> None:
         try:
             summary = self.service.order_summary()
+            recent_orders = self.service.recent_orders(limit=8)
         except (ServiceError, sqlite3.Error, OSError):
             for card in self.cards.values():
                 card.value_label.setText("—")
@@ -415,38 +547,93 @@ class DashboardPage(QWidget):
             self.activity_state.description_label.setText(
                 "Revisa la base de datos local y vuelve a entrar al panel principal."
             )
+            self.recent_table.hide()
+            self.activity_state.show()
             return
         for key, card in self.cards.items():
             card.set_value(summary[key])
-        total = summary["total"]
-        if total:
-            self.activity_state.title_label.setText("Actividad registrada")
-            self.activity_state.description_label.setText(
-                f"Hay {total} órdenes en el tablero. Consulta el módulo de servicio para revisar el detalle."
+        self.recent_table.setRowCount(len(recent_orders))
+        for row, order in enumerate(recent_orders):
+            values = (
+                order["codigo"],
+                order["cliente_nombre"],
+                f"{order['equipo_codigo']} · {order['equipo_tipo']}",
+                format_local_datetime(order["recibido_en_utc"]),
+                _STATUS_LABELS.get(order["estado"], order["estado"]),
             )
-        else:
-            self.activity_state.title_label.setText("Todavía no hay órdenes")
-            self.activity_state.description_label.setText(
-                "Las órdenes reales aparecerán aquí cuando se registren en el sistema."
-            )
+            for column, value in enumerate(values):
+                set_cell(self.recent_table, row, column, value)
+            self.recent_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, order["id"])
+        has_orders = bool(recent_orders)
+        self.recent_table.setVisible(has_orders)
+        self.activity_state.setVisible(not has_orders)
+        self.open_recent_button.setEnabled(False)
+
+    def _selected_recent_order_id(self) -> int | None:
+        row = self.recent_table.currentRow()
+        if row < 0 or self.recent_table.item(row, 0) is None:
+            return None
+        return self.recent_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+
+    def _sync_recent_action(self) -> None:
+        self.open_recent_button.setEnabled(self._selected_recent_order_id() is not None)
+
+    def _emit_selected_order(self) -> None:
+        order_id = self._selected_recent_order_id()
+        if order_id is not None:
+            self.request_order_details.emit(order_id)
+
+    def _open_recent_order(self, row: int, _column: int) -> None:
+        item = self.recent_table.item(row, 0)
+        if item is not None:
+            self.request_order_details.emit(item.data(Qt.ItemDataRole.UserRole))
 
 
 class ComingSoonPage(QWidget):
-    def __init__(self, title: str, description: str, parent=None) -> None:
+    def __init__(
+        self,
+        title: str,
+        description: str,
+        planned_features: tuple[str, ...] = (),
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(44, 38, 44, 38)
-        self.state = EmptyState(
-            f"{title}: próximamente",
-            description,
-        )
+        layout.setSpacing(18)
         layout.addStretch(1)
-        layout.addWidget(self.state)
+        panel = QFrame()
+        panel.setProperty("role", "surface")
+        panel.setMaximumWidth(920)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(34, 30, 34, 32)
+        panel_layout.setSpacing(18)
+        heading = QLabel(f"{title}: próximamente")
+        heading.setStyleSheet("font-size: 20pt; font-weight: 700;")
+        panel_layout.addWidget(heading)
+        explanatory_text = QLabel(description)
+        explanatory_text.setObjectName("muted")
+        explanatory_text.setWordWrap(True)
+        panel_layout.addWidget(explanatory_text)
+        if planned_features:
+            features_heading = QLabel("Funciones previstas")
+            features_heading.setStyleSheet("font-size: 12pt; font-weight: 700;")
+            panel_layout.addWidget(features_heading)
+            for feature in planned_features:
+                feature_label = QLabel(f"•  {feature}")
+                feature_label.setWordWrap(True)
+                panel_layout.addWidget(feature_label)
+        panel_layout.addWidget(QLabel("Este módulo aún no guarda ni modifica datos."))
+        layout.addWidget(panel, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
 
 
 class InformationPage(QWidget):
-    def __init__(self, database_path: str, schema_version: int, parent=None) -> None:
+    theme_changed = Signal(str)
+    update_requested = Signal()
+    open_release_requested = Signal(str)
+
+    def __init__(self, schema_version: int, theme_name: str = "dark", parent=None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 26, 28, 28)
@@ -459,21 +646,80 @@ class InformationPage(QWidget):
         title = QLabel("Información de la aplicación")
         title.setStyleSheet("font-size: 15pt; font-weight: 700;")
         panel_layout.addRow(title)
-        panel_layout.addRow("Versión", QLabel("0.1.0 · En desarrollo"))
+        panel_layout.addRow("Aplicación", QLabel("DragonTech Manager"))
+        panel_layout.addRow("Desarrollado por", QLabel("BlackLabs Dev"))
+        from dragontech_manager import __version__
+
+        panel_layout.addRow("Versión", QLabel(f"{__version__} · En desarrollo"))
+        panel_layout.addRow("Python / PySide6", QLabel(f"Python {python_version()} · Qt {PYSIDE_VERSION}"))
         panel_layout.addRow("Esquema SQLite", QLabel(str(schema_version)))
-        path_label = QLabel(database_path)
-        path_label.setWordWrap(True)
-        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        panel_layout.addRow("Base de datos local", path_label)
         note = QLabel(
             "Los datos se guardan localmente en este computador. La base se crea vacía en el primer inicio; "
-            "no se cargan clientes ni registros de demostración. Las copias de seguridad aún no están disponibles desde la interfaz."
+            "no se cargan clientes ni registros de demostración. La ruta local se omite para no exponer datos privados. "
+            "Las copias de seguridad aún no están disponibles desde la interfaz."
         )
         note.setObjectName("muted")
         note.setWordWrap(True)
         panel_layout.addRow(note)
         layout.addWidget(panel)
+
+        appearance = QFrame()
+        appearance.setProperty("role", "surface")
+        appearance_layout = QFormLayout(appearance)
+        appearance_layout.setContentsMargins(22, 20, 22, 20)
+        appearance_layout.setHorizontalSpacing(20)
+        appearance_title = QLabel("Apariencia")
+        appearance_title.setStyleSheet("font-size: 14pt; font-weight: 700;")
+        appearance_layout.addRow(appearance_title)
+        self.theme_selector = QComboBox()
+        self.theme_selector.addItem("Oscuro", "dark")
+        self.theme_selector.addItem("Claro", "light")
+        index = self.theme_selector.findData(theme_name)
+        self.theme_selector.setCurrentIndex(max(0, index))
+        self.theme_selector.currentIndexChanged.connect(
+            lambda _index: self.theme_changed.emit(self.theme_selector.currentData())
+        )
+        appearance_layout.addRow("Tema", self.theme_selector)
+        layout.addWidget(appearance)
+
+        updates = QFrame()
+        updates.setProperty("role", "surface")
+        updates_layout = QVBoxLayout(updates)
+        updates_layout.setContentsMargins(22, 20, 22, 20)
+        updates_layout.setSpacing(10)
+        updates_title = QLabel("Actualizaciones")
+        updates_title.setStyleSheet("font-size: 14pt; font-weight: 700;")
+        updates_layout.addWidget(updates_title)
+        self.update_status = QLabel("El canal oficial de actualizaciones aún no está configurado.")
+        self.update_status.setObjectName("muted")
+        self.update_status.setWordWrap(True)
+        updates_layout.addWidget(self.update_status)
+        buttons = QHBoxLayout()
+        self.check_updates_button = QPushButton("Buscar actualizaciones")
+        self.check_updates_button.setObjectName("primaryButton")
+        self.check_updates_button.clicked.connect(self.update_requested.emit)
+        buttons.addWidget(self.check_updates_button)
+        self.open_release_button = QPushButton("Abrir página de versión")
+        self.open_release_button.hide()
+        self.open_release_button.clicked.connect(
+            lambda: self.open_release_requested.emit(self._release_url)
+        )
+        self._release_url = ""
+        buttons.addWidget(self.open_release_button)
+        buttons.addStretch(1)
+        updates_layout.addLayout(buttons)
+        layout.addWidget(updates)
         layout.addStretch(1)
+
+    def set_update_checking(self) -> None:
+        self.update_status.setText("Comprobando el canal de versiones…")
+        self.check_updates_button.setEnabled(False)
+
+    def set_update_result(self, result: UpdateCheckResult) -> None:
+        self.check_updates_button.setEnabled(True)
+        self.update_status.setText(result.message)
+        self._release_url = result.release_url or ""
+        self.open_release_button.setVisible(result.status == "available" and bool(self._release_url))
 
 
 class EquipmentHistoryDialog(QDialog):

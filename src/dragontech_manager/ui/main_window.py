@@ -3,8 +3,10 @@
 import sqlite3
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,6 +24,7 @@ from dragontech_manager.services.dashboard import DashboardService
 from dragontech_manager.services.equipment import EquipmentService
 from dragontech_manager.services.errors import ServiceError
 from dragontech_manager.services.service_orders import ServiceOrderService
+from dragontech_manager.services.updates import UpdateChecker
 from .pages import (
     ComingSoonPage,
     CustomerPage,
@@ -31,6 +34,9 @@ from .pages import (
     InformationPage,
     OrdersPage,
 )
+from .order_details import OrderDetailDialog
+from .theme import apply_theme, load_theme_preference, save_theme_preference
+from .update_worker import UpdateCheckWorker
 
 _NAV_ITEMS = (
     ("dashboard", "⌂", "Panel principal"),
@@ -61,12 +67,17 @@ class MainWindow(QMainWindow):
         database_path: str,
         schema_version: int,
         owns_connection: bool = True,
+        settings: QSettings | None = None,
     ) -> None:
         super().__init__()
         self.connection = connection
         self.database_path = database_path
         self.schema_version = schema_version
         self.owns_connection = owns_connection
+        self.settings = settings or QSettings()
+        self.theme_name = load_theme_preference(self.settings)
+        self.update_checker = UpdateChecker()
+        self.update_worker: UpdateCheckWorker | None = None
         self.setWindowTitle("DragonTech Manager")
         # Un mínimo alto impedía encajar la ventana en pantallas compactas.
         # Las tablas conservan sus anchos legibles y desplazan horizontalmente.
@@ -100,13 +111,23 @@ class MainWindow(QMainWindow):
             "orders": OrdersPage(self.order_service, self.customer_service, self.equipment_service),
             "sales": ComingSoonPage(
                 "Cotizaciones y ventas",
-                "El esquema está preparado, pero las operaciones comerciales todavía no están implementadas.",
+                "El esquema de datos existe, pero todavía no hay operaciones comerciales reales en la aplicación.",
+                (
+                    "Preparar y consultar cotizaciones con sus conceptos y vigencia.",
+                    "Convertir una cotización aceptada en venta y registrar pagos parciales.",
+                    "Consultar saldos calculados a partir de los pagos trazables.",
+                ),
             ),
             "inventory": ComingSoonPage(
                 "Inventario",
-                "La consulta y los movimientos de existencias estarán disponibles en una etapa posterior.",
+                "El módulo todavía no ofrece formularios ni modifica existencias.",
+                (
+                    "Consultar productos, referencias y existencias actuales.",
+                    "Registrar compras, reservas y entradas o salidas confirmadas.",
+                    "Consultar proveedores, garantías y el historial de movimientos.",
+                ),
             ),
-            "information": InformationPage(database_path, schema_version),
+            "information": InformationPage(schema_version, self.theme_name),
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
@@ -116,8 +137,18 @@ class MainWindow(QMainWindow):
         for key, page in self.pages.items():
             if isinstance(page, DashboardPage):
                 page.request_navigation.connect(self._navigate)
+                page.request_create.connect(self._dashboard_quick_create)
+                page.request_order_details.connect(self._show_order_detail)
             if isinstance(page, (CustomerPage, EquipmentPage, OrdersPage)):
                 page.request_create.connect(lambda page=page: self._run_create(page))
+            if isinstance(page, (CustomerPage, EquipmentPage)):
+                page.request_edit.connect(lambda record_id, page=page: self._run_edit(page, record_id))
+            if isinstance(page, OrdersPage):
+                page.request_details.connect(self._show_order_detail)
+            if isinstance(page, InformationPage):
+                page.theme_changed.connect(self._change_theme)
+                page.update_requested.connect(self._check_for_updates)
+                page.open_release_requested.connect(self._open_release_page)
             if isinstance(page, EquipmentPage):
                 page.history_requested.connect(self._show_equipment_history)
         self._current_key = "dashboard"
@@ -223,6 +254,13 @@ class MainWindow(QMainWindow):
         page = self.pages[self._current_key]
         self._run_create(page)
 
+    def _dashboard_quick_create(self, destination: str) -> None:
+        page = self.pages.get(destination)
+        if page is None or not hasattr(page, "create_dialog"):
+            return
+        self._navigate(destination)
+        self._run_create(page)
+
     def _run_create(self, page: QWidget) -> None:
         try:
             created = page.create_dialog(self)  # type: ignore[attr-defined]
@@ -233,6 +271,7 @@ class MainWindow(QMainWindow):
             return
         page.offset = 0  # type: ignore[attr-defined]
         page.refresh()  # type: ignore[attr-defined]
+        self.pages["dashboard"].refresh()
         record = getattr(page, "last_created_record", None)
         if record:
             code = record.get("codigo")
@@ -248,6 +287,81 @@ class MainWindow(QMainWindow):
             self._show_error(str(error) if isinstance(error, ServiceError) else "No se pudo cargar el historial del equipo.")
             return
         EquipmentHistoryDialog(history, self).exec()
+
+    def _run_edit(self, page: QWidget, record_id: int) -> None:
+        try:
+            updated = page.edit_dialog(record_id, self)  # type: ignore[attr-defined]
+        except (ServiceError, sqlite3.Error, OSError) as error:
+            self._show_error(
+                str(error)
+                if isinstance(error, ServiceError)
+                else "No se pudo cargar o actualizar el registro. Revisa la base local e inténtalo de nuevo."
+            )
+            return
+        if updated:
+            page.restore_selection_after_refresh(record_id)  # type: ignore[attr-defined]
+            page.refresh()  # type: ignore[attr-defined]
+            self.statusBar().showMessage("Cambios guardados correctamente.", 7000)
+
+    def _show_order_detail(self, order_id: int) -> None:
+        try:
+            dialog = OrderDetailDialog(self.order_service, order_id, self)
+            dialog.exec()
+        except (ServiceError, sqlite3.Error, OSError) as error:
+            self._show_error(
+                str(error)
+                if isinstance(error, ServiceError)
+                else "No se pudo cargar el detalle de la orden."
+            )
+            return
+        if dialog.changed:
+            self.pages["orders"].refresh()
+            self.pages["dashboard"].refresh()
+            self.statusBar().showMessage("Orden actualizada y su historial fue registrado.", 7000)
+
+    def _change_theme(self, theme_name: str) -> None:
+        try:
+            self.theme_name = save_theme_preference(theme_name, self.settings)
+        except ValueError as error:
+            self._show_error(str(error))
+            return
+        application = QApplication.instance()
+        if application:
+            apply_theme(application, self.theme_name)
+        for key in ("customers", "equipment", "orders"):
+            page = self.pages[key]
+            selected_id = page._selected_record_id()  # type: ignore[attr-defined]
+            if selected_id is not None:
+                page.restore_selection_after_refresh(selected_id)  # type: ignore[attr-defined]
+            page.refresh()  # type: ignore[attr-defined]
+        self.pages["dashboard"].refresh()
+        self.statusBar().showMessage(
+            f"Tema {'claro' if theme_name == 'light' else 'oscuro'} aplicado y guardado.", 5000
+        )
+
+    def _check_for_updates(self) -> None:
+        page = self.pages["information"]
+        if self.update_worker and self.update_worker.isRunning():
+            return
+        if not self.update_checker.is_configured:
+            page.set_update_result(self.update_checker.check(__version__))
+            return
+        page.set_update_checking()
+        worker = UpdateCheckWorker(self.update_checker, __version__, self)
+        self.update_worker = worker
+        worker.completed.connect(page.set_update_result)
+        worker.finished.connect(lambda worker=worker: self._clear_update_worker(worker))
+        worker.start()
+
+    def _clear_update_worker(self, worker: UpdateCheckWorker) -> None:
+        if self.update_worker is worker:
+            self.update_worker = None
+
+    @staticmethod
+    def _open_release_page(url: str) -> None:
+        parsed = QUrl(url)
+        if parsed.scheme() == "https" and parsed.host():
+            QDesktopServices.openUrl(parsed)
 
     def _show_error(self, message: str) -> None:
         QMessageBox.warning(self, "No se pudo completar la operación", message)
