@@ -1,6 +1,7 @@
 """Detalle técnico de una orden y sus cambios de estado."""
 
 import sqlite3
+from uuid import uuid4
 
 from PySide6.QtCore import QRegularExpression, Qt
 from PySide6.QtGui import QRegularExpressionValidator
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -27,6 +29,14 @@ from dragontech_manager.services.errors import ServiceError
 from .pages import format_cop, format_local_datetime
 from .widgets import build_table, set_cell
 
+_PAYMENT_METHODS = (
+    "Efectivo",
+    "Transferencia bancaria",
+    "Tarjeta de débito",
+    "Tarjeta de crédito",
+    "Otro",
+)
+
 _STATE_LABELS = {
     "recibida": "Recibida (pendiente)",
     "diagnostico": "Diagnóstico (pendiente)",
@@ -36,6 +46,87 @@ _STATE_LABELS = {
     "entregada": "Entregada",
     "cancelada": "Cancelada",
 }
+
+
+class OrderPaymentDialog(QDialog):
+    def __init__(self, order: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.order = order
+        self.idempotency_key = uuid4().hex
+        self.setWindowTitle("Registrar pago de orden")
+        self.setMinimumSize(540, 380)
+        self.resize(600, 430)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
+
+        header = QLabel(f"Orden {order.get('codigo', '')} · {order.get('cliente_solicitante_nombre', '')}")
+        header.setStyleSheet("font-size: 13pt; font-weight: 700;")
+        layout.addWidget(header)
+
+        pending = max(0, order.get("saldo_pendiente_cop", 0))
+        balance_info = QLabel(
+            f"Precio acordado: {format_cop(order.get('importe_acordado_cop', 0))} · "
+            f"Pagado neto: {format_cop(order.get('pagado_neto_cop', 0))} · "
+            f"Saldo pendiente: {format_cop(pending)}"
+        )
+        balance_info.setObjectName("muted")
+        layout.addWidget(balance_info)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
+
+        self.amount = QLineEdit(str(pending) if pending > 0 else "")
+        self.amount.setPlaceholderText("Importe en pesos colombianos")
+        self.amount.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"[0-9]{1,19}"), self.amount)
+        )
+        self.method = QComboBox()
+        self.method.addItems(_PAYMENT_METHODS)
+        self.reference = QLineEdit()
+        self.reference.setPlaceholderText("Comprobante, nro. de transacción, recibo (opcional)")
+
+        form.addRow("Importe (COP) *", self.amount)
+        form.addRow("Medio de pago *", self.method)
+        form.addRow("Referencia", self.reference)
+        layout.addLayout(form)
+
+        self.error = QLabel()
+        self.error.setObjectName("formError")
+        self.error.setStyleSheet("color: #C98282; font-size: 9pt;")
+        layout.addWidget(self.error)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Revisar y registrar pago")
+        buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName("primaryButton")
+        buttons.accepted.connect(self._validate)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def payment_values(self) -> tuple[int, str, str]:
+        text = self.amount.text().strip()
+        if not text or not text.isdigit():
+            raise ValueError("El importe debe ser un número entero mayor que cero.")
+        amount = int(text)
+        if amount <= 0:
+            raise ValueError("El importe debe ser mayor que cero.")
+        method = self.method.currentText()
+        reference = self.reference.text().strip()
+        return amount, method, reference
+
+    def _validate(self) -> None:
+        try:
+            amount, _method, _reference = self.payment_values()
+            saldo = self.order.get("saldo_pendiente_cop", 0)
+            if amount > saldo:
+                raise ValueError("El pago supera el saldo pendiente de la orden.")
+        except ValueError as error:
+            self.error.setText(str(error))
+            return
+        self.accept()
 
 
 class OrderDetailDialog(QDialog):
@@ -74,6 +165,8 @@ class OrderDetailDialog(QDialog):
         self.status_label = QLabel()
         self.delivery_label = QLabel()
         self.price_label = QLabel()
+        self.paid_label = QLabel()
+        self.balance_label = QLabel()
         for label in (
             self.customer_label,
             self.equipment_label,
@@ -81,6 +174,8 @@ class OrderDetailDialog(QDialog):
             self.status_label,
             self.delivery_label,
             self.price_label,
+            self.paid_label,
+            self.balance_label,
         ):
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             label.setWordWrap(True)
@@ -90,6 +185,8 @@ class OrderDetailDialog(QDialog):
         summary.addRow("Estado", self.status_label)
         summary.addRow("Fecha de entrega", self.delivery_label)
         summary.addRow("Precio acordado", self.price_label)
+        summary.addRow("Total pagado", self.paid_label)
+        summary.addRow("Saldo pendiente", self.balance_label)
         general_section, general_layout = self._section("Información general")
         general_layout.addLayout(summary)
         content_layout.addWidget(general_section)
@@ -184,6 +281,29 @@ class OrderDetailDialog(QDialog):
         self.proposal_description.textChanged.connect(self._mark_dirty)
         self.proposal_amount.textChanged.connect(self._mark_dirty)
         self.decision_evidence.textChanged.connect(self._mark_dirty)
+
+        payments_section, payments_layout = self._section("Pagos y cobros de la orden")
+        payment_actions = QHBoxLayout()
+        self.register_payment_button = QPushButton("＋ Registrar pago")
+        self.register_payment_button.setObjectName("primaryButton")
+        self.reverse_payment_button = QPushButton("Revertir pago seleccionado")
+        payment_actions.addWidget(self.register_payment_button)
+        payment_actions.addWidget(self.reverse_payment_button)
+        payment_actions.addStretch(1)
+        payments_layout.addLayout(payment_actions)
+
+        self.payments_table = build_table(
+            ["Tipo", "Importe", "Medio", "Referencia / motivo", "Registrado (UTC)"],
+            column_widths=[140, 160, 160, 320, 200],
+            flexible_column=3,
+        )
+        self.payments_table.setMinimumHeight(180)
+        payments_layout.addWidget(self.payments_table)
+        content_layout.addWidget(payments_section)
+
+        self.payments_table.itemSelectionChanged.connect(self._sync_payment_buttons)
+        self.register_payment_button.clicked.connect(self._register_payment)
+        self.reverse_payment_button.clicked.connect(self._reverse_payment)
 
         state_row = QHBoxLayout()
         self.next_state = QComboBox()
@@ -283,7 +403,9 @@ class OrderDetailDialog(QDialog):
         self.received_label.setText(format_local_datetime(order["recibido_en_utc"]))
         self.status_label.setText(_STATE_LABELS.get(order["estado"], order["estado"]))
         self.delivery_label.setText(order["fecha_entrega"] or "Sin fecha registrada")
-        self.price_label.setText(format_cop(order["importe_acordado_cop"]))
+        self.price_label.setText(format_cop(order.get("importe_acordado_cop", 0)))
+        self.paid_label.setText(format_cop(order.get("pagado_neto_cop", 0)))
+        self.balance_label.setText(format_cop(order.get("saldo_pendiente_cop", 0)))
         self.problem.setPlainText(order["problema_reportado"])
         self.diagnosis.setPlainText(order["diagnostico"])
         self.work.setPlainText(order["trabajo_realizado"])
@@ -385,6 +507,7 @@ class OrderDetailDialog(QDialog):
         for row in range(self.history.rowCount()):
             self.history.setRowHeight(row, max(54, self.history.rowHeight(row)))
         self._reload_additional_services()
+        self._reload_payments()
         self._dirty = self._has_unsaved_additional_input()
         self._loading = False
 
@@ -601,3 +724,145 @@ class OrderDetailDialog(QDialog):
             self._reload()
         except (ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo cambiar el estado", str(error))
+
+    def _reload_payments(self) -> None:
+        payments = self.service.list_order_payments(self.order_id)
+        self.payments_table.blockSignals(True)
+        self.payments_table.setRowCount(len(payments))
+        for row, payment in enumerate(payments):
+            is_receipt = payment["tipo"] == "recibo"
+            tipo_label = "Pago recibido" if is_receipt else "Reversión"
+            ref_or_reason = payment["motivo"] if not is_receipt else (payment["referencia"] or "—")
+            values = (
+                tipo_label,
+                format_cop(payment["importe_cop"]),
+                payment["metodo"],
+                ref_or_reason,
+                format_local_datetime(payment["registrado_en_utc"]),
+            )
+            for col, val in enumerate(values):
+                set_cell(self.payments_table, row, col, val)
+            self.payments_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, payment["id"])
+            self.payments_table.item(row, 0).setData(Qt.ItemDataRole.UserRole + 1, payment["tipo"])
+            self.payments_table.item(
+                row, 0
+            ).setData(Qt.ItemDataRole.UserRole + 2, bool(payment.get("reversado")))
+            self.payments_table.item(row, 0).setData(
+                Qt.ItemDataRole.UserRole + 3, payment["importe_cop"]
+            )
+            self.payments_table.setRowHeight(row, 46)
+        self.payments_table.blockSignals(False)
+        self._sync_payment_buttons()
+
+    def _sync_payment_buttons(self) -> None:
+        saldo = self.order.get("saldo_pendiente_cop", 0)
+        can_pay = self.order.get("estado") != "cancelada" and saldo > 0
+        self.register_payment_button.setEnabled(can_pay)
+        if not can_pay:
+            if self.order.get("estado") == "cancelada":
+                self.register_payment_button.setToolTip(
+                    "No se aceptan pagos en órdenes canceladas."
+                )
+            elif saldo <= 0:
+                self.register_payment_button.setToolTip(
+                    "La orden no tiene saldo pendiente por cobrar."
+                )
+            else:
+                self.register_payment_button.setToolTip("")
+        else:
+            self.register_payment_button.setToolTip("")
+
+        row = self.payments_table.currentRow()
+        item = self.payments_table.item(row, 0) if row >= 0 else None
+        can_reverse = (
+            bool(item)
+            and item.data(Qt.ItemDataRole.UserRole + 1) == "recibo"
+            and not item.data(Qt.ItemDataRole.UserRole + 2)
+        )
+        self.reverse_payment_button.setEnabled(can_reverse)
+
+    def _register_payment(self) -> None:
+        dialog = OrderPaymentDialog(self.order, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            amount, method, reference = dialog.payment_values()
+            saldo_anterior = self.order.get("saldo_pendiente_cop", 0)
+            nuevo_saldo = saldo_anterior - amount
+            total_previo = self.order.get("pagado_neto_cop", 0)
+
+            answer = QMessageBox.question(
+                self,
+                "Confirmar pago de orden",
+                f"Orden: {self.order['codigo']} · {self.order['cliente_solicitante_nombre']}\n"
+                f"Importe a registrar: {format_cop(amount)}\n"
+                f"Total pagado previamente: {format_cop(total_previo)}\n"
+                f"Saldo anterior: {format_cop(saldo_anterior)}\n"
+                f"Saldo resultante: {format_cop(nuevo_saldo)}\n"
+                f"Medio de pago: {method} · Referencia: {reference or '—'}\n\n"
+                "¿Confirmas el registro del pago?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.service.register_payment(
+                self.order_id,
+                amount,
+                method=method,
+                reference=reference,
+                idempotency_key=dialog.idempotency_key,
+            )
+            self.changed = True
+            self._reload()
+        except (ValueError, ServiceError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "No se pudo registrar el pago", str(error))
+
+    def _reverse_payment(self) -> None:
+        row = self.payments_table.currentRow()
+        if row < 0:
+            return
+        item = self.payments_table.item(row, 0)
+        if (
+            not item
+            or item.data(Qt.ItemDataRole.UserRole + 1) != "recibo"
+            or item.data(Qt.ItemDataRole.UserRole + 2)
+        ):
+            return
+        payment_id = item.data(Qt.ItemDataRole.UserRole)
+        amount = item.data(Qt.ItemDataRole.UserRole + 3)
+        saldo_anterior = self.order.get("saldo_pendiente_cop", 0)
+        saldo_resultante = saldo_anterior + amount
+
+        reason, ok = QInputDialog.getText(
+            self,
+            "Motivo de reversión",
+            "Explica por qué se corrige o devuelve este pago (obligatorio):",
+        )
+        if not ok or not reason.strip():
+            if ok:
+                QMessageBox.warning(
+                    self, "Motivo requerido", "El motivo de la reversión es obligatorio."
+                )
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Confirmar reversión de pago",
+            f"Se conservará el recibo original de {format_cop(amount)} en el historial "
+            f"y se registrará una reversión trazable por el mismo importe.\n\n"
+            f"Motivo: {reason.strip()}\n"
+            f"Saldo anterior: {format_cop(saldo_anterior)}\n"
+            f"Saldo resultante: {format_cop(saldo_resultante)}\n\n"
+            "¿Confirmas que deseas revertir este pago?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.service.reverse_payment(payment_id, reason=reason.strip())
+            self.changed = True
+            self._reload()
+        except (ServiceError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "No se pudo revertir el pago", str(error))

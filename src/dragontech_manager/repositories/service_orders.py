@@ -58,19 +58,12 @@ class ServiceOrderRepository:
                       e.codigo AS equipo_codigo, e.tipo AS equipo_tipo,
                       e.marca AS equipo_marca, e.modelo AS equipo_modelo,
                       e.serial AS equipo_serial, propietario.nombre AS propietario_nombre,
-                      o.importe_inicial_cop + COALESCE((
-                          SELECT SUM(s.importe_propuesto_cop)
-                          FROM servicios_adicionales s
-                          WHERE s.orden_id = o.id AND (
-                              SELECT d.decision FROM decisiones_adicional d
-                              WHERE d.servicio_adicional_id = s.id
-                              ORDER BY d.decidido_en_utc DESC, d.id DESC LIMIT 1
-                          ) = 'aprobado'
-                      ), 0) AS importe_acordado_cop
+                      s.importe_acordado_cop, s.pagado_neto_cop, s.saldo_pendiente_cop
                FROM ordenes_servicio o
                JOIN clientes c ON c.id = o.cliente_id
                JOIN equipos e ON e.id = o.equipo_id
                JOIN clientes propietario ON propietario.id = e.cliente_id
+               JOIN v_saldos_ordenes s ON s.orden_id = o.id
                WHERE o.id = ?""",
             (order_id,),
         ).fetchone()
@@ -273,3 +266,63 @@ class ServiceOrderRepository:
             (equipment_id,),
         ).fetchall()
         return rows_dict(rows)
+
+    def financial_summary(self, order_id: int) -> dict | None:
+        row = self.connection.execute(
+            "SELECT * FROM v_saldos_ordenes WHERE orden_id = ?", (order_id,)
+        ).fetchone()
+        return row_dict(row)
+
+    def list_payments(self, order_id: int) -> list[dict]:
+        return rows_dict(self.connection.execute(
+            """SELECT p.*,
+                      EXISTS (SELECT 1 FROM pagos_clientes r WHERE r.reversa_pago_id = p.id) AS reversado
+               FROM pagos_clientes p WHERE p.orden_id = ?
+               ORDER BY p.registrado_en_utc, p.id""", (order_id,)
+        ).fetchall())
+
+    def create_payment(
+        self,
+        *,
+        order_id: int,
+        amount_cop: int,
+        method: str,
+        reference: str,
+        timestamp_utc: str,
+        idempotency_key: str,
+    ) -> dict:
+        return row_dict(self.connection.execute(
+            """INSERT INTO pagos_clientes
+               (orden_id, importe_cop, tipo, metodo, referencia, registrado_en_utc,
+                clave_idempotencia)
+               VALUES (?, ?, 'recibo', ?, ?, ?, ?) RETURNING *""",
+            (order_id, amount_cop, method, reference, timestamp_utc, idempotency_key),
+        ).fetchone())
+    def get_payment(self, payment_id: int) -> dict | None:
+        return row_dict(self.connection.execute(
+            "SELECT * FROM pagos_clientes WHERE id = ?", (payment_id,)
+        ).fetchone())
+    def get_payment_by_key(self, key: str) -> dict | None:
+        return row_dict(self.connection.execute(
+            "SELECT * FROM pagos_clientes WHERE clave_idempotencia = ?", (key,)
+        ).fetchone())
+    def payment_reversed(self, payment_id: int) -> bool:
+        return self.connection.execute(
+            "SELECT 1 FROM pagos_clientes WHERE reversa_pago_id = ?", (payment_id,)
+        ).fetchone() is not None
+
+    def reverse_payment(
+        self,
+        original: dict,
+        *,
+        reason: str,
+        timestamp_utc: str,
+    ) -> dict:
+        return row_dict(self.connection.execute(
+            """INSERT INTO pagos_clientes
+               (orden_id, importe_cop, tipo, metodo, referencia, registrado_en_utc,
+                reversa_pago_id, motivo)
+               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?) RETURNING *""",
+            (original["orden_id"], original["importe_cop"], original["metodo"],
+             original["referencia"], timestamp_utc, original["id"], reason),
+        ).fetchone())

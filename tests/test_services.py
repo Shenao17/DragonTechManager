@@ -484,6 +484,184 @@ class ServiceTests(unittest.TestCase):
             self.connection.execute("SELECT 1 FROM secuencias WHERE entidad = 'equipo'").fetchone()
         )
 
+    def test_order_payment_advances_and_partials_update_balance(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Falla de encendido", initial_amount_cop=100_000
+        )
+        bal_initial = self.orders.get_order_balance(order["id"])
+        self.assertEqual(bal_initial["importe_acordado_cop"], 100_000)
+        self.assertEqual(bal_initial["pagado_neto_cop"], 0)
+        self.assertEqual(bal_initial["saldo_pendiente_cop"], 100_000)
+
+        # Anticipo
+        res1 = self.orders.register_payment(
+            order["id"], 30_000, method="Efectivo", idempotency_key="ord-pay-1", reference="Anticipo inicial"
+        )
+        self.assertFalse(res1["repetido"])
+        self.assertEqual(res1["balance"]["pagado_neto_cop"], 30_000)
+        self.assertEqual(res1["balance"]["saldo_pendiente_cop"], 70_000)
+
+        # Abono parcial
+        res2 = self.orders.register_payment(
+            order["id"], 40_000, method="Transferencia bancaria", idempotency_key="ord-pay-2", reference="Abono intermedio"
+        )
+        self.assertFalse(res2["repetido"])
+        self.assertEqual(res2["balance"]["pagado_neto_cop"], 70_000)
+        self.assertEqual(res2["balance"]["saldo_pendiente_cop"], 30_000)
+
+        # Saldo exacto
+        res3 = self.orders.register_payment(
+            order["id"], 30_000, method="Tarjeta de débito", idempotency_key="ord-pay-3"
+        )
+        self.assertFalse(res3["repetido"])
+        self.assertEqual(res3["balance"]["pagado_neto_cop"], 100_000)
+        self.assertEqual(res3["balance"]["saldo_pendiente_cop"], 0)
+
+        # Verificar lista de pagos
+        payments = self.orders.list_order_payments(order["id"])
+        self.assertEqual(len(payments), 3)
+        for p in payments:
+            self.assertEqual(p["tipo"], "recibo")
+            self.assertFalse(p["reversado"])
+
+    def test_order_payment_idempotency_and_retry(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Mantenimiento", initial_amount_cop=50_000
+        )
+        first = self.orders.register_payment(
+            order["id"], 25_000, method="Efectivo", idempotency_key="idem-key-1", reference="Recibo 1"
+        )
+        self.assertFalse(first["repetido"])
+
+        # Reintento con los mismos datos devuelve el resultado original
+        retry = self.orders.register_payment(
+            order["id"], 25_000, method="Efectivo", idempotency_key="idem-key-1", reference="Recibo 1"
+        )
+        self.assertTrue(retry["repetido"])
+        self.assertEqual(retry["pago"]["id"], first["pago"]["id"])
+        self.assertEqual(retry["balance"]["saldo_pendiente_cop"], 25_000)
+
+        # Reintento con la misma clave pero datos distintos genera conflicto
+        with self.assertRaises(ConflictError):
+            self.orders.register_payment(
+                order["id"], 10_000, method="Efectivo", idempotency_key="idem-key-1"
+            )
+
+    def test_order_payment_validation_zero_negative_and_overpayment(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Reparación", initial_amount_cop=40_000
+        )
+        with self.assertRaises(ValidationError):
+            self.orders.register_payment(order["id"], 0, method="Efectivo", idempotency_key="zero-pay")
+        with self.assertRaises(ValidationError):
+            self.orders.register_payment(order["id"], -5000, method="Efectivo", idempotency_key="neg-pay")
+        with self.assertRaises(ValidationError):
+            self.orders.register_payment(order["id"], True, method="Efectivo", idempotency_key="bool-pay")
+        with self.assertRaises(ValidationError):
+            self.orders.register_payment(order["id"], 40_001, method="Efectivo", idempotency_key="over-pay")
+        with self.assertRaises(ValidationError):
+            self.orders.register_payment(order["id"], 10_000, method="   ", idempotency_key="blank-method")
+
+    def test_order_payment_reversal_updates_balance_and_blocks_duplicate(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Cambio pantalla", initial_amount_cop=80_000
+        )
+        pay = self.orders.register_payment(
+            order["id"], 50_000, method="Transferencia", idempotency_key="rev-test-pay"
+        )
+        self.assertEqual(pay["balance"]["saldo_pendiente_cop"], 30_000)
+
+        # Motivo obligatorio
+        with self.assertRaises(ValidationError):
+            self.orders.reverse_payment(pay["pago"]["id"], reason="  ")
+
+        # Reversión válida
+        rev = self.orders.reverse_payment(pay["pago"]["id"], reason="Error en comprobante bancario")
+        self.assertEqual(rev["pago"]["tipo"], "reversion")
+        self.assertEqual(rev["pago"]["reversa_pago_id"], pay["pago"]["id"])
+        self.assertEqual(rev["balance"]["pagado_neto_cop"], 0)
+        self.assertEqual(rev["balance"]["saldo_pendiente_cop"], 80_000)
+
+        # Reversión duplicada rechazada
+        with self.assertRaises(ConflictError):
+            self.orders.reverse_payment(pay["pago"]["id"], reason="Segundo intento de reversión")
+
+        # No se puede revertir una reversión
+        with self.assertRaises(ConflictError):
+            self.orders.reverse_payment(rev["pago"]["id"], reason="Revertir la reversión")
+
+        # Verificar lista de pagos
+        payments = self.orders.list_order_payments(order["id"])
+        self.assertEqual(len(payments), 2)
+        orig_entry = next(p for p in payments if p["id"] == pay["pago"]["id"])
+        rev_entry = next(p for p in payments if p["id"] == rev["pago"]["id"])
+        self.assertTrue(orig_entry["reversado"])
+        self.assertEqual(rev_entry["tipo"], "reversion")
+        self.assertEqual(rev_entry["motivo"], "Error en comprobante bancario")
+
+    def test_order_payment_canceled_order_blocks_new_payments_but_allows_reversal(self) -> None:
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Revisión general", initial_amount_cop=50_000
+        )
+        pay = self.orders.register_payment(
+            order["id"], 20_000, method="Efectivo", idempotency_key="cancel-anticipo"
+        )
+
+        # Cancelar orden (desde recibida no se puede cancelar directamente, vamos a diagnostico o cancelamos por SQL/transición)
+        self.orders.transition_order(order["id"], "diagnostico")
+        self.orders.update_technical_details(order["id"], diagnosis="Inviable reparación", work_performed="")
+        # Para pasar a cancelada: la máquina de estados _ORDER_TRANSITIONS define:
+        # "cancelada": set(). Desde recibida/diagnostico, ¿se puede cancelar?
+        # En _ORDER_TRANSITIONS:
+        # "recibida": {"diagnostico"},
+        # "diagnostico": {"espera_aprobacion", "en_proceso"}
+        # Forcemos estado cancelada en la base para verificar la regla del servicio
+        self.connection.execute("UPDATE ordenes_servicio SET estado = 'cancelada' WHERE id = ?", (order["id"],))
+
+        with self.assertRaises(ConflictError):
+            self.orders.register_payment(order["id"], 10_000, method="Efectivo", idempotency_key="cancel-pay")
+
+        # Reversión de anticipo sí debe estar permitida para devolver dinero
+        rev = self.orders.reverse_payment(pay["pago"]["id"], reason="Devolución de anticipo por orden cancelada")
+        self.assertEqual(rev["balance"]["pagado_neto_cop"], 0)
+
+    def test_order_payment_isolation_from_sales(self) -> None:
+        from dragontech_manager.services.inventory import InventoryService
+        from dragontech_manager.services.sales import SalesService
+        sales_svc = SalesService(self.connection)
+        inv_svc = InventoryService(self.connection)
+
+        customer, equipment = self.make_customer_and_equipment()
+        order = self.orders.open_service_order(
+            customer["id"], equipment["id"], "Limpieza", initial_amount_cop=40_000
+        )
+        ord_pay = self.orders.register_payment(
+            order["id"], 15_000, method="Efectivo", idempotency_key="isolated-ord-pay"
+        )
+
+        prod = inv_svc.create_product(sku="ISO-PART", name="Pieza aislada", unit_cost_cop=5_000, suggested_price_cop=10_000)
+        inv_svc.adjust_stock(prod["id"], 10, unit_cost_cop=5_000, reason="Stock")
+        sale = sales_svc.create_sale(
+            customer["id"],
+            [{"description": "Pieza aislada", "quantity": 1, "unit_price_cop": 10_000, "product_id": prod["id"]}],
+            idempotency_key="isolated-sale",
+        )
+        sale_pay = sales_svc.register_payment(sale["id"], 10_000, method="Efectivo", idempotency_key="isolated-sale-pay")
+
+        # Los pagos de la orden no incluyen los de la venta
+        ord_payments = self.orders.list_order_payments(order["id"])
+        self.assertEqual(len(ord_payments), 1)
+        self.assertEqual(ord_payments[0]["id"], ord_pay["pago"]["id"])
+
+        # Intentar revertir el pago de venta desde el servicio de órdenes debe fallar
+        with self.assertRaises(NotFoundError):
+            self.orders.reverse_payment(sale_pay["pago"]["id"], reason="Intento inválido cruzado")
+
 
 if __name__ == "__main__":
     unittest.main()

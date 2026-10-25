@@ -33,7 +33,7 @@ from dragontech_manager.services.inventory import InventoryService
 from dragontech_manager.services.procurement import ProcurementService
 from dragontech_manager.services.sales import SalesService
 from dragontech_manager.ui.dialogs import CustomerDialog, EquipmentDialog, ServiceOrderDialog
-from dragontech_manager.ui.order_details import OrderDetailDialog
+from dragontech_manager.ui.order_details import OrderDetailDialog, OrderPaymentDialog
 from dragontech_manager.ui.proposals import ProposalDialog, ProposalDetailsDialog
 from dragontech_manager.ui.inventory import InventoryWorkspacePage, ProductDialog
 from dragontech_manager.ui.procurement import PurchaseDialog, SupplierDialog
@@ -761,6 +761,97 @@ class DesktopUiTests(unittest.TestCase):
             1,
         )
         self.assertEqual(window._current_key, "customers")
+
+    def test_order_detail_payments_and_reversals_flow(self) -> None:
+        customer = CustomerService(self.connection).create_customer("Cliente cobros UI")
+        equipment = EquipmentService(self.connection).register_equipment(customer["id"], "Portátil")
+        service = ServiceOrderService(self.connection)
+        order = service.open_service_order(
+            customer["id"], equipment["id"], "Mantenimiento preventivo", initial_amount_cop=60_000
+        )
+        dialog = OrderDetailDialog(service, order["id"])
+        self.addCleanup(dialog.close)
+
+        # 1. Verificar estado inicial
+        self.assertEqual(dialog.price_label.text(), "$ 60.000 COP")
+        self.assertEqual(dialog.paid_label.text(), "$ 0 COP")
+        self.assertEqual(dialog.balance_label.text(), "$ 60.000 COP")
+        self.assertTrue(dialog.register_payment_button.isEnabled())
+        self.assertFalse(dialog.reverse_payment_button.isEnabled())
+        self.assertEqual(dialog.payments_table.rowCount(), 0)
+
+        # 2. Registrar anticipo de 20.000 COP
+        def fill_payment_dialog() -> None:
+            dlg = next(w for w in QApplication.topLevelWidgets() if isinstance(w, OrderPaymentDialog))
+            dlg.amount.setText("20000")
+            dlg.method.setCurrentText("Efectivo")
+            dlg.reference.setText("Recibo #101")
+            dlg.findChild(QDialogButtonBox).accepted.emit()
+
+        QTimer.singleShot(0, fill_payment_dialog)
+        with patch(
+            "dragontech_manager.ui.order_details.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            dialog.register_payment_button.click()
+
+        self.assertTrue(dialog.changed)
+        self.assertEqual(dialog.paid_label.text(), "$ 20.000 COP")
+        self.assertEqual(dialog.balance_label.text(), "$ 40.000 COP")
+        self.assertEqual(dialog.payments_table.rowCount(), 1)
+        self.assertEqual(dialog.payments_table.item(0, 0).text(), "Pago recibido")
+        self.assertEqual(dialog.payments_table.item(0, 1).text(), "$ 20.000 COP")
+
+        # 3. Registrar pago del saldo restante (40.000 COP)
+        def fill_second_payment() -> None:
+            dlg = next(w for w in QApplication.topLevelWidgets() if isinstance(w, OrderPaymentDialog))
+            self.assertEqual(dlg.amount.text(), "40000")  # Sugerido automáticamente
+            dlg.method.setCurrentText("Transferencia bancaria")
+            dlg.reference.setText("Transf-5544")
+            dlg.findChild(QDialogButtonBox).accepted.emit()
+
+        QTimer.singleShot(0, fill_second_payment)
+        with patch(
+            "dragontech_manager.ui.order_details.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            dialog.register_payment_button.click()
+
+        self.assertEqual(dialog.paid_label.text(), "$ 60.000 COP")
+        self.assertEqual(dialog.balance_label.text(), "$ 0 COP")
+        self.assertEqual(dialog.payments_table.rowCount(), 2)
+        self.assertFalse(dialog.register_payment_button.isEnabled())
+
+        # 4. Seleccionar el primer pago para revertir
+        dialog.payments_table.selectRow(0)
+        self.assertTrue(dialog.reverse_payment_button.isEnabled())
+
+        # 5. Revertir el primer pago
+        with patch(
+            "dragontech_manager.ui.order_details.QInputDialog.getText",
+            return_value=("Devolución de anticipo solicitado por cliente", True),
+        ), patch(
+            "dragontech_manager.ui.order_details.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            dialog.reverse_payment_button.click()
+
+        self.assertEqual(dialog.payments_table.rowCount(), 3)
+        self.assertEqual(dialog.paid_label.text(), "$ 40.000 COP")
+        self.assertEqual(dialog.balance_label.text(), "$ 20.000 COP")
+        self.assertTrue(dialog.register_payment_button.isEnabled())
+
+        # Fila 0 (revertido): no debe permitir revertirse de nuevo
+        dialog.payments_table.selectRow(0)
+        self.assertFalse(dialog.reverse_payment_button.isEnabled())
+
+        # Fila 2 (es una reversión): no debe permitir revertirse
+        dialog.payments_table.selectRow(2)
+        self.assertFalse(dialog.reverse_payment_button.isEnabled())
+
+        # Fila 1 (segundo pago aún activo): sí debe permitir revertirse
+        dialog.payments_table.selectRow(1)
+        self.assertTrue(dialog.reverse_payment_button.isEnabled())
 
 
 if __name__ == "__main__":

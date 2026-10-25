@@ -86,7 +86,6 @@ class ServiceOrderService:
                 return order
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
-
     def get_order(self, order_id: int) -> dict:
         order_id = positive_id(order_id, "La orden")
         order = self.orders.get(order_id)
@@ -177,7 +176,6 @@ class ServiceOrderService:
                 )
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
-
     def decide_additional_service(
         self, additional_id: int, decision: str, evidence: str
     ) -> dict:
@@ -214,7 +212,6 @@ class ServiceOrderService:
                 return next(item for item in entries if item["id"] == additional_id)
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
-
     def update_technical_details(
         self,
         order_id: int,
@@ -258,7 +255,6 @@ class ServiceOrderService:
                 return updated
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
-
     def transition_order(
         self,
         order_id: int,
@@ -357,7 +353,6 @@ class ServiceOrderService:
                 return updated
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
-
     def list_orders(
         self,
         *,
@@ -383,3 +378,100 @@ class ServiceOrderService:
             limit=limit,
             offset=offset,
         )
+
+    @staticmethod
+    def _key(value: object) -> str:
+        key = required_text(value, "La clave de idempotencia")
+        if len(key) > 120:
+            raise ValidationError("La clave de idempotencia no puede superar 120 caracteres.")
+        return key
+
+    def get_order_balance(self, order_id: int) -> dict:
+        order_id = positive_id(order_id, "La orden")
+        order = self.orders.get(order_id)
+        if order is None:
+            raise NotFoundError("No se encontró la orden solicitada.")
+        summary = self.orders.financial_summary(order_id)
+        if summary is None:
+            raise NotFoundError("No se encontró el estado financiero de la orden.")
+        return summary
+
+    def list_order_payments(self, order_id: int) -> list[dict]:
+        order_id = positive_id(order_id, "La orden")
+        if self.orders.get(order_id) is None:
+            raise NotFoundError("No se encontró la orden solicitada.")
+        return self.orders.list_payments(order_id)
+
+    def register_payment(
+        self,
+        order_id: int,
+        amount_cop: int,
+        *,
+        method: str,
+        idempotency_key: str,
+        reference: str = "",
+    ) -> dict:
+        order_id = positive_id(order_id, "La orden")
+        amount = nonnegative_cop(amount_cop, "El pago")
+        if amount <= 0:
+            raise ValidationError("El pago debe ser mayor que cero.")
+        method_value = required_text(method, "El medio de pago")
+        reference_value = optional_text(reference, "La referencia", none_as_empty=True)
+        key = self._key(idempotency_key)
+        timestamp, _ = timestamp_and_business_year()
+        try:
+            with atomic(self.connection):
+                prior = self.orders.get_payment_by_key(key)
+                if prior:
+                    if (
+                        prior["orden_id"] != order_id
+                        or prior["importe_cop"] != amount
+                        or prior["metodo"] != method_value
+                        or prior["referencia"] != reference_value
+                        or prior["tipo"] != "recibo"
+                    ):
+                        raise ConflictError("La clave de reintento ya se usó con otro pago.")
+                    balance = self.get_order_balance(order_id)
+                    return {"pago": prior, "balance": balance, "repetido": True}
+                order = self.orders.get(order_id)
+                if order is None:
+                    raise NotFoundError("No se encontró la orden asociada al pago.")
+                if order["estado"] == "cancelada":
+                    raise ConflictError("No se aceptan pagos para una orden cancelada.")
+                balance = self.orders.financial_summary(order_id)
+                if balance is None:
+                    raise NotFoundError("No se encontró el estado financiero de la orden.")
+                if amount > balance["saldo_pendiente_cop"]:
+                    raise ValidationError("El pago supera el saldo pendiente de la orden.")
+                payment = self.orders.create_payment(
+                    order_id=order_id,
+                    amount_cop=amount,
+                    method=method_value,
+                    reference=reference_value or "",
+                    timestamp_utc=timestamp,
+                    idempotency_key=key,
+                )
+                new_balance = self.orders.financial_summary(order_id)
+                return {"pago": payment, "balance": new_balance, "repetido": False}
+        except sqlite3.IntegrityError as error:
+            raise translate_integrity_error(error) from error
+    def reverse_payment(self, payment_id: int, *, reason: str) -> dict:
+        payment_id = positive_id(payment_id, "El pago")
+        reason_value = required_text(reason, "El motivo de reversión")
+        timestamp, _ = timestamp_and_business_year()
+        try:
+            with atomic(self.connection):
+                original = self.orders.get_payment(payment_id)
+                if original is None or original["orden_id"] is None:
+                    raise NotFoundError("No se encontró el pago de orden que se quiere revertir.")
+                if original["tipo"] != "recibo":
+                    raise ConflictError("Solo se pueden revertir pagos originales.")
+                if self.orders.payment_reversed(payment_id):
+                    raise ConflictError("Este pago ya tiene una reversión registrada.")
+                reversal = self.orders.reverse_payment(
+                    original, reason=reason_value, timestamp_utc=timestamp
+                )
+                new_balance = self.orders.financial_summary(original["orden_id"])
+                return {"pago": reversal, "balance": new_balance}
+        except sqlite3.IntegrityError as error:
+            raise translate_integrity_error(error) from error
