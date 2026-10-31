@@ -13,6 +13,15 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MAX_INTEGER = 9_223_372_036_854_775_807
 _STOCK_FILTERS = {"todos", "agotado", "bajo", "disponible"}
 _UNSET = object()
+# El mecanismo genérico solo corrige ajustes manuales. Los movimientos con
+# origen documental se corrigen desde su flujo de negocio para que la venta,
+# compra, orden o armado quede consistente con el inventario.
+_SOURCE_FLOWS = (
+    ("venta_detalle_id", "una venta", "ventas"),
+    ("compra_detalle_id", "una compra", "compras"),
+    ("orden_repuesto_id", "una orden de servicio", "órdenes de servicio"),
+    ("armado_componente_id", "un ensamblaje de PC", "ensamblajes"),
+)
 
 
 class InventoryService:
@@ -116,10 +125,32 @@ class InventoryService:
     def can_reverse_movement(self, movement_id: int) -> bool:
         movement_id = positive_id(movement_id, "El movimiento")
         movement = self.repository.get_movement(movement_id)
-        return bool(
-            movement and movement["tipo"] != "reversion"
-            and not self.repository.movement_reversal_exists(movement_id)
-        )
+        return bool(movement and self._reversal_blocked_reason(movement) is None)
+
+    def _reversal_blocked_reason(self, movement: dict) -> str | None:
+        if movement["tipo"] == "reversion":
+            return "Un movimiento de reversión no se puede revertir de nuevo."
+        if self.repository.movement_reversal_exists(movement["id"]):
+            return "Este movimiento ya tiene una reversión registrada."
+        for column, origin, flow in _SOURCE_FLOWS:
+            if movement.get(column) is not None:
+                return (
+                    f"Este movimiento proviene de {origin}. El mecanismo genérico solo "
+                    f"revierte ajustes: corrige la operación desde el flujo de {flow} para "
+                    "conservar la trazabilidad."
+                )
+        return None
+
+    def reversal_blocked_reason(self, movement_id: int) -> str | None:
+        """Motivo por el que el mecanismo genérico no puede revertir el movimiento.
+
+        Devuelve ``None`` cuando la reversión genérica sí está permitida.
+        """
+        movement_id = positive_id(movement_id, "El movimiento")
+        movement = self.repository.get_movement(movement_id)
+        if movement is None:
+            raise NotFoundError("No se encontró el movimiento solicitado.")
+        return self._reversal_blocked_reason(movement)
 
     def get_movement(self, movement_id: int) -> dict:
         movement_id = positive_id(movement_id, "El movimiento")
@@ -163,10 +194,9 @@ class InventoryService:
                 original = self.repository.get_movement(movement_id)
                 if original is None:
                     raise NotFoundError("No se encontró el movimiento que se quiere corregir.")
-                if original["tipo"] == "reversion":
-                    raise ConflictError("Un movimiento de reversión no se puede revertir de nuevo.")
-                if self.repository.movement_reversal_exists(movement_id):
-                    raise ConflictError("Este movimiento ya tiene una reversión registrada.")
+                blocked = self._reversal_blocked_reason(original)
+                if blocked:
+                    raise ConflictError(blocked)
                 stock = self.repository.stock_and_reserved(original["producto_id"])
                 if stock is None or stock[0] - original["cantidad_delta"] < stock[1]:
                     raise ConflictError("La reversión dejaría el stock por debajo de las unidades reservadas.")

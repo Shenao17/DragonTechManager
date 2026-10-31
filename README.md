@@ -40,7 +40,7 @@ La ubicación se obtiene de `QStandardPaths.AppDataLocation` y de la identidad d
 - Windows: normalmente `%APPDATA%/DragonTech/DragonTech Manager/dragontech_manager.sqlite3`.
 - macOS: normalmente `~/Library/Application Support/DragonTech/DragonTech Manager/dragontech_manager.sqlite3`.
 
-Qt puede ajustar la ruta según la configuración del sistema. La interfaz no muestra la ruta local completa para evitar exponer información privada. La copia de seguridad y restauración desde la interfaz todavía no están implementadas; antes de restaurar una copia, cierra la aplicación y valida integridad y migraciones según [la arquitectura](docs/architecture.md).
+Qt puede ajustar la ruta según la configuración del sistema. La interfaz no muestra la ruta local completa para evitar exponer información privada. Las copias de seguridad ya están implementadas: se crean en `backups/` junto a la base, antes de aplicar migraciones y con validación de integridad. Ver [Respaldos y restauración](docs/backups.md). La restauración todavía no tiene interfaz gráfica: se ejecuta con la aplicación cerrada desde la API documentada.
 
 ## Preferencias, información y actualizaciones
 
@@ -58,5 +58,7 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
 - [Arquitectura](docs/architecture.md)
 - [Modelo de datos](docs/data-model.md)
+- [Respaldos y restauración](docs/backups.md)
+- [Cambios de la Fase 0](docs/fase-0.md)
 
 El esquema SQL inicial está en `src/dragontech_manager/database/migrations/0001_initial_schema.sql`; las migraciones `0003`–`0007` agregan historiales, campos y restricciones de forma versionada. La migración `0007` habilita idempotencia persistente, vinculación segura de cotizaciones convertidas y conserva los saldos derivados. Las migraciones aplicadas no deben editarse; los cambios futuros se agregan con un número de versión nuevo. La [auditoría y hoja de ruta](docs/data-model.md#auditoría-funcional-y-límites) clasifica los módulos y sus carencias actuales.

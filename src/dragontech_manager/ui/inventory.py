@@ -293,7 +293,11 @@ class ProductDetailDialog(QDialog):
 
     def _sync_reverse(self) -> None:
         movement_id = self._selected_movement_id()
-        self.reverse_button.setEnabled(bool(movement_id and self.service.can_reverse_movement(movement_id)))
+        reason = self.service.reversal_blocked_reason(movement_id) if movement_id else None
+        self.reverse_button.setEnabled(bool(movement_id) and reason is None)
+        self.reverse_button.setToolTip(
+            reason or "Revierte un ajuste manual y conserva el historial del movimiento."
+        )
 
     def _reverse(self) -> None:
         movement_id = self._selected_movement_id()
@@ -492,3 +496,9 @@ class InventoryWorkspacePage(QWidget):
         self.products.changed.connect(self.purchases.refresh)
         self.purchases.changed.connect(self.products.refresh)
         self.purchases.changed.connect(self.suppliers.refresh)
+
+    def refresh(self) -> None:
+        """Recarga las pestañas para que existencias y saldos reflejen datos actuales."""
+        self.products.refresh()
+        self.suppliers.refresh()
+        self.purchases.refresh()

@@ -8,6 +8,11 @@ from PySide6.QtCore import QSettings, QStandardPaths
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from dragontech_manager import __version__
+from dragontech_manager.database.backup import (
+    DEFAULT_RETENTION,
+    create_backup,
+    default_backup_directory,
+)
 from dragontech_manager.database.connection import open_database
 from dragontech_manager.database.migrations import migrate
 from dragontech_manager.ui.main_window import MainWindow
@@ -32,8 +37,28 @@ def application_data_directory() -> Path:
     return directory
 
 
-def initialize_database(database_path: str | Path) -> tuple[sqlite3.Connection, int]:
-    """Abre y migra la base sin borrar ni reemplazar un archivo existente."""
+def _has_migration_history(connection: sqlite3.Connection) -> bool:
+    """Indica si la base ya tiene esquema gestionado por migraciones."""
+    try:
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def initialize_database(
+    database_path: str | Path,
+    *,
+    backup_dir: str | Path | None = None,
+    backup_retention: int = DEFAULT_RETENTION,
+) -> tuple[sqlite3.Connection, int]:
+    """Abre y migra la base sin borrar ni reemplazar un archivo existente.
+
+    Si se indica ``backup_dir`` y la base ya tenía esquema, crea una copia
+    consistente antes de aplicar migraciones. Así toda actualización deja un
+    punto de restauración validado.
+    """
     path = Path(database_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not path.is_file():
@@ -41,6 +66,15 @@ def initialize_database(database_path: str | Path) -> tuple[sqlite3.Connection, 
 
     connection = open_database(path)
     try:
+        if (
+            backup_dir is not None
+            and path.is_file()
+            and path.stat().st_size > 0
+            and _has_migration_history(connection)
+        ):
+            create_backup(
+                connection, backup_dir, label="inicio", retention=backup_retention
+            )
         version = migrate(connection)
     except Exception:
         connection.close()
@@ -81,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
     connection: sqlite3.Connection | None = None
     try:
         database_path = application_data_directory() / DATABASE_FILENAME
-        connection, schema_version = initialize_database(database_path)
+        connection, schema_version = initialize_database(
+            database_path, backup_dir=default_backup_directory(database_path)
+        )
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
         QMessageBox.critical(
             None,
