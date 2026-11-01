@@ -198,12 +198,12 @@ class SalesServiceTests(unittest.TestCase):
         self.assertEqual(second["venta"]["estado_cobro"], "completada")
         with self.assertRaises(ValidationError):
             self.sales.register_payment(sale["id"], 1, method="Efectivo", idempotency_key="overpay")
-        reversal = self.sales.reverse_payment(first["pago"]["id"], reason="Pago registrado por error")
+        reversal = self.sales.reverse_payment(first["pago"]["id"], reason="Pago registrado por error", nature="correccion_registro_erroneo", source="operador", evidence="Comprobante inexistente")
         self.assertEqual(reversal["venta"]["pagado_neto_cop"], 40_000)
         self.assertEqual(reversal["venta"]["saldo_pendiente_cop"], 20_000)
         self.assertEqual(len(self.sales.get_sale(sale["id"])["pagos"]), 3)
         with self.assertRaises(ConflictError):
-            self.sales.reverse_payment(first["pago"]["id"], reason="Segundo intento")
+            self.sales.reverse_payment(first["pago"]["id"], reason="Segundo intento", nature="correccion_registro_erroneo", source="operador", evidence="Comprobante inexistente")
 
     def test_invalid_payment_amount_and_non_sales_payment_are_rejected(self) -> None:
         sale = self.sales.create_sale(self.customer["id"], [self.inventory_line()], idempotency_key="payment-validation")

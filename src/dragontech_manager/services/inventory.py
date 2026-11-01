@@ -19,6 +19,7 @@ _UNSET = object()
 # compra, orden o armado quede consistente con el inventario.
 _SOURCE_FLOWS = (
     ("venta_detalle_id", "una venta", "ventas"),
+    ("devolucion_venta_linea_id", "una devolución de venta", "devoluciones"),
     ("compra_detalle_id", "una compra", "compras"),
     ("orden_repuesto_id", "una orden de servicio", "órdenes de servicio"),
     ("armado_componente_id", "un ensamblaje de PC", "ensamblajes"),

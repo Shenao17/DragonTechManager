@@ -11,5 +11,10 @@
 
 - Entrega 3 = parte A del 0011 (sin dependencia de 0010); la parte B pasará a una migración posterior (Informe3 §4.7 prevé 0012 si 0008–0011 ya se aplicaron). `v_saldos_ordenes` se mantiene sin columnas de crédito hasta 0010.
 
+- Entrega 4: la cancelación total es derivada (todas las unidades devueltas); no se guarda un tipo. R7/R11 (liquidación) se evalúan cuando existan compensaciones (Entrega 5/6), por lo que 0010 no impone C+G=D.
+- Entrega 4 incluye `v_devoluciones_no_reintegradas` (depende solo de líneas) y la clasificación de reversión de pagos; los `actores` quedan para la Entrega 6.
+- Autorización de valor reconocido menor: autorizador + referencia obligatorios y distintos del ejecutor (Informe2 §4.3); resto de reglas declarativas.
+- Numeración provisional: Entrega 5 → 0012, Entrega 6 → 0013, parte B del 0011 → 0014; se recrean vistas/triggers con DROP/CREATE, nunca se edita una migración aplicada.
+
 ## Propuestas/pendientes
 Ver `KNOWN_ISSUES.md` (P1–P11 en Informe2 §12 e Informe3 §7).

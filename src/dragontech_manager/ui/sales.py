@@ -11,12 +11,16 @@ from PySide6.QtWidgets import (
 )
 
 from dragontech_manager.services.errors import ServiceError
+from dragontech_manager.services.idempotency import IntentKey
+from dragontech_manager.services.returns import ReturnsService
 from .pages import format_cop, format_local_datetime
 from .widgets import EmptyState, build_table, set_cell
 from .proposals import ProposalPage
+from .returns import PaymentReversalDialog, ReturnDialog
 
 _SALE_STATES = {"abierta": "Pendiente de pago", "parcial": "Pago parcial",
-                "completada": "Pagada", "cancelada": "Cancelada"}
+                "completada": "Pagada", "cancelada": "Cancelada",
+                "reembolso_pendiente": "Reembolso pendiente"}
 
 
 def _integer(text: str, label: str, *, positive: bool = False) -> int:
@@ -298,6 +302,8 @@ class SaleDetailsDialog(QDialog):
         self.service = service
         self.sale_id = sale_id
         self.changed = False
+        self.returns_service = ReturnsService(service.connection)
+        self._return_intent = IntentKey()
         self.setMinimumSize(820, 620)
         self.resize(1100, 820)
         self.outer = QVBoxLayout(self)
@@ -323,6 +329,9 @@ class SaleDetailsDialog(QDialog):
             f"{self.sale['codigo']} · {_SALE_STATES[self.sale['estado_cobro']]}\n"
             f"Cliente: {self.sale['cliente_nombre']} · Fecha: {self.sale['fecha_venta']}\n"
             f"Total: {format_cop(self.sale['importe_acordado_cop'])} · Pagado: {format_cop(self.sale['pagado_neto_cop'])} · Saldo: {format_cop(self.sale['saldo_pendiente_cop'])}"
+            + (f"\nDevuelto reconocido: {format_cop(self.sale['devuelto_reconocido_cop'])} · "
+               f"Pagado en exceso pendiente de compensar: {format_cop(self.sale['sobrepago_pendiente_cop'])}"
+               if self.sale["estado_devolucion"] != "ninguna" else "")
         ))
         lines = build_table(["Concepto", "Cantidad", "Precio unitario", "Subtotal", "SKU"],
                             column_widths=[410, 100, 180, 180, 130], flexible_column=0)
@@ -342,6 +351,10 @@ class SaleDetailsDialog(QDialog):
         self.reverse_button = QPushButton("Revertir pago seleccionado")
         controls.addWidget(self.pay_button)
         controls.addWidget(self.reverse_button)
+        self.return_button = QPushButton("Registrar devolución")
+        self.return_button.setEnabled(self.sale["estado_devolucion"] != "total")
+        self.return_button.clicked.connect(self._return)
+        controls.addWidget(self.return_button)
         controls.addStretch(1)
         self.body_layout.addLayout(controls)
         self.payments = build_table(["Tipo", "Importe", "Medio", "Referencia / motivo", "Registrado (UTC)"],
@@ -411,11 +424,10 @@ class SaleDetailsDialog(QDialog):
         if (item.data(Qt.ItemDataRole.UserRole + 1) != "recibo"
                 or item.data(Qt.ItemDataRole.UserRole + 2)):
             return
-        reason, ok = QInputDialog.getText(
-            self, "Motivo de reversión", "Explica por qué se corrige este pago:"
-        )
-        if not ok or not reason.strip():
+        reversal = PaymentReversalDialog(self)
+        if reversal.exec() != QDialog.DialogCode.Accepted:
             return
+        details = reversal.values()
         answer = QMessageBox.question(
             self, "Confirmar reversión", "Se conservará el pago original y se registrará una reversión por el mismo importe. ¿Continuar?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
@@ -424,11 +436,35 @@ class SaleDetailsDialog(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            self.service.reverse_payment(item.data(Qt.ItemDataRole.UserRole), reason=reason)
+            self.service.reverse_payment(item.data(Qt.ItemDataRole.UserRole), **details)
             self.changed = True
             self._render()
         except (ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo revertir el pago", str(error))
+
+    def _return(self) -> None:
+        dialog = ReturnDialog(self.sale, self.returns_service.returnable_lines(self.sale_id), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            values = dialog.values()
+            key = self._return_intent.for_payload({"venta": self.sale_id, **values})
+            answer = QMessageBox.question(
+                self, "Confirmar devolución",
+                "Se registrará la devolución y las unidades aptas volverán al inventario. "
+                "No se genera reembolso automático. ¿Continuar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.return_button.setEnabled(False)
+            self.returns_service.register_return(self.sale_id, idempotency_key=key, **values)
+            self._return_intent.complete()
+            self.changed = True
+            self._render()
+        except (ValueError, ServiceError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "No se pudo registrar la devolución", str(error))
+            self.return_button.setEnabled(self.sale["estado_devolucion"] != "total")
 
 
 class SalesPage(QWidget):

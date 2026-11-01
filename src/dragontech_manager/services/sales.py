@@ -19,6 +19,10 @@ _MAX = 9_223_372_036_854_775_807
 _BOGOTA = ZoneInfo("America/Bogota")
 
 
+_REVERSAL_NATURES = {"correccion_registro_erroneo", "reversion_financiera_real"}
+_REVERSAL_SOURCES = {"banco", "operador", "conciliacion", "otro"}
+
+
 class SalesService:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
@@ -230,7 +234,7 @@ class SalesService:
     def list_sales(self, *, search: str | None = None, state: str | None = None,
                    date_from: str | None = None, date_to: str | None = None,
                    limit: int = 100, offset: int = 0) -> list[dict]:
-        if state is not None and state not in {"abierta", "parcial", "completada", "cancelada"}:
+        if state is not None and state not in {"abierta", "parcial", "completada", "cancelada", "reembolso_pendiente"}:
             raise ValidationError("El filtro de estado de venta no es válido.")
         for value, label in ((date_from, "La fecha inicial"), (date_to, "La fecha final")):
             if value is not None:
@@ -266,7 +270,7 @@ class SalesService:
                 sale = self.sales.get_sale(sale_id)
                 if sale is None:
                     raise NotFoundError("No se encontró la venta asociada al pago.")
-                if sale["estado"] == "cancelada":
+                if sale["estado_cobro"] == "cancelada":
                     raise ConflictError("No se aceptan pagos para una venta cancelada.")
                 if amount_cop > sale["saldo_pendiente_cop"]:
                     raise ValidationError("El pago supera el saldo pendiente de la venta.")
@@ -280,9 +284,21 @@ class SalesService:
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
 
-    def reverse_payment(self, payment_id: int, *, reason: str) -> dict:
+    def reverse_payment(self, payment_id: int, *, reason: str, nature: str, source: str,
+                        evidence: str) -> dict:
+        """Revierte un pago de venta sin tocar el original.
+
+        ``nature`` distingue ``correccion_registro_erroneo`` (el dinero nunca ingresó)
+        de ``reversion_financiera_real`` (ingresó y fue revertido); ``source`` es solo
+        la procedencia y no cambia el tratamiento contable (Nota de corrección §2.6).
+        """
         payment_id = positive_id(payment_id, "El pago")
         reason_value = required_text(reason, "El motivo de reversión")
+        if nature not in _REVERSAL_NATURES:
+            raise ValidationError("Indica si es una corrección de registro erróneo o una reversión financiera real.")
+        if source not in _REVERSAL_SOURCES:
+            raise ValidationError("Indica el origen del evento: banco, operador, conciliación u otro.")
+        evidence_value = required_text(evidence, "La evidencia de la reversión")
         timestamp, _ = timestamp_and_business_year()
         try:
             with atomic(self.connection):
@@ -295,7 +311,8 @@ class SalesService:
                     raise ConflictError("Este pago ya tiene una reversión registrada.")
                 reversal = self.sales.reverse_payment(
                     original, reason=reason_value, timestamp_utc=timestamp,
-                    business_date=business_date_from_utc(timestamp))
+                    business_date=business_date_from_utc(timestamp),
+                    nature=nature, source=source, evidence=evidence_value)
                 return {"pago": reversal, "venta": self.get_sale(original["venta_id"])}
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error

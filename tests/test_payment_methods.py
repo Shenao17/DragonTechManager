@@ -52,7 +52,7 @@ class PaymentMethodTests(unittest.TestCase):
                         return_value=(NIGHT_UTC, 2026)):
             result = self.sales.register_payment(
                 self.sale["id"], 10_000, method="efectivo", idempotency_key="night-pay")
-            reversal = self.sales.reverse_payment(result["pago"]["id"], reason="Error de captura")
+            reversal = self.sales.reverse_payment(result["pago"]["id"], reason="Error de captura", nature="correccion_registro_erroneo", source="operador", evidence="Sin abono en extracto")
         payment = result["pago"]
         self.assertEqual(payment["metodo"], "Efectivo")
         self.assertEqual(payment["fecha_negocio"], "2026-10-24")

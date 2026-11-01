@@ -35,7 +35,9 @@ class SalesRepository:
     def get_sale(self, sale_id: int) -> dict | None:
         return row_dict(self.connection.execute(
             """SELECT v.*, c.nombre AS cliente_nombre, b.importe_acordado_cop,
-                      b.pagado_neto_cop, b.saldo_pendiente_cop,
+                      b.devuelto_reconocido_cop, b.importe_neto_cop,
+                      b.pagado_neto_cop, b.saldo_pendiente_cop, b.sobrepago_pendiente_cop,
+                      b.unidades_vendidas, b.unidades_devueltas, b.estado_devolucion,
                       b.estado_cobro
                FROM ventas v JOIN clientes c ON c.id = v.cliente_id
                JOIN v_saldos_ventas b ON b.venta_id = v.id WHERE v.id = ?""",
@@ -73,8 +75,8 @@ class SalesRepository:
         return rows_dict(self.connection.execute(
             """SELECT v.id, v.codigo, v.fecha_venta, v.cliente_id,
                       c.nombre AS cliente_nombre, v.estado, b.importe_acordado_cop,
-                      b.pagado_neto_cop, b.saldo_pendiente_cop,
-                      b.estado_cobro
+                      b.pagado_neto_cop, b.saldo_pendiente_cop, b.sobrepago_pendiente_cop,
+                      b.estado_devolucion, b.estado_cobro
                FROM ventas v JOIN clientes c ON c.id = v.cliente_id
                JOIN v_saldos_ventas b ON b.venta_id = v.id
                WHERE (? IS NULL OR b.estado_cobro = ?)
@@ -115,13 +117,14 @@ class SalesRepository:
         ).fetchone() is not None
 
     def reverse_payment(self, original: dict, *, reason: str, timestamp_utc: str,
-                        business_date: str) -> dict:
+                        business_date: str, nature: str, source: str, evidence: str) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_clientes
                (venta_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
-                registrado_en_utc, fecha_negocio, reversa_pago_id, motivo)
-               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+                registrado_en_utc, fecha_negocio, reversa_pago_id, motivo,
+                naturaleza_reversion, origen_evento, evidencia_reversion)
+               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (original["venta_id"], original["importe_cop"], original["metodo"],
              original["metodo_pago_id"], original["referencia"], timestamp_utc,
-             business_date, original["id"], reason),
+             business_date, original["id"], reason, nature, source, evidence),
         ).fetchone())

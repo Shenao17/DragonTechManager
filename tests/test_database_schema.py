@@ -59,7 +59,7 @@ class DatabaseSchemaTests(unittest.TestCase):
         self.assertEqual(migrate(self.connection), 11)
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
-            10,
+            11,
         )
 
     def test_foreign_keys_restrict_orphan_records_and_integrity_check_passes(self) -> None:
