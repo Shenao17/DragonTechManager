@@ -15,6 +15,7 @@ from dragontech_manager.services.idempotency import IntentKey
 from dragontech_manager.services.returns import ReturnsService
 from .pages import format_cop, format_local_datetime
 from .widgets import EmptyState, build_table, set_cell
+from .product_defaults import ProductFieldBinding
 from .proposals import ProposalPage
 from .returns import PaymentReversalDialog, ReturnDialog
 
@@ -67,26 +68,15 @@ class SaleLineDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.line = None
-        self.product.currentIndexChanged.connect(self._suggest)
+        self.binding = ProductFieldBinding(self.product, self.description, self.price, "precio_actual_cop")
         if line:
-            index = next((i for i in range(self.product.count())
-                          if (self.product.itemData(i) or {}).get("id") == line.get("product_id")), 0)
-            self.product.setCurrentIndex(index)
-            self.description.setPlainText(line["description"])
+            self.binding.load_existing(line.get("product_id"), description=line["description"],
+                                       amount=line["unit_price_cop"])
             self.quantity.setValue(line["quantity"])
-            self.price.setText(str(line["unit_price_cop"]))
-
-    def _suggest(self, _index: int) -> None:
-        product = self.product.currentData()
-        if product:
-            if not self.description.toPlainText().strip():
-                self.description.setPlainText(product["nombre"])
-            if not self.price.text().strip():
-                self.price.setText(str(product["precio_actual_cop"]))
 
     def _accept_line(self) -> None:
         try:
-            product = self.product.currentData()
+            product = self.binding.sync_for_save()
             description = self.description.toPlainText().strip()
             if not description:
                 raise ValueError("La descripción histórica es obligatoria.")

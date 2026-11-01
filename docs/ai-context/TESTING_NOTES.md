@@ -5,7 +5,7 @@ source .venv/bin/activate
 PYTHONPATH=src QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests
 PYTHONPATH=src python -m unittest tests.test_payment_methods   # Entrega 1
 ```
-- Última ejecución completa: 2026-10-31, 182 pruebas OK (Entrega 4). `PYTHONPATH=src python -m unittest tests.test_idempotency` para la entrega.
+- Última ejecución completa: 2026-10-31, 193 pruebas OK (tras la corrección de selección de productos). `PYTHONPATH=src python -m unittest tests.test_idempotency` para la entrega.
 - Críticas por módulo: pagos (`test_sales`, `test_services`, `test_inventory`), esquema/migraciones (`test_database_schema`, `test_payment_methods`), respaldos (`test_backup`).
 - Validación manual de UI pendiente: diálogos de pago de venta, orden y compra con combos de catálogo.
 

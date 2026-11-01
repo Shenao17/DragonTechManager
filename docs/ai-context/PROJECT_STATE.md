@@ -12,6 +12,7 @@ Actualizado: 2026-10-31. Rama `main`, sin commits nuevos de Fase 1 (cambios sin 
 
 - Fase 1 · Entrega 3 (migración `0011`, parte A): `v_ordenes_importes` es la única definición del importe acordado de órdenes; `v_saldos_ordenes`, `ServiceOrderRepository.list_orders` y los triggers `pagos_clientes_no_sobrepagar_orden`, `orden_no_reducir_deuda_pagada`, `decisiones_adicional_no_reduce_deuda_pagada` la consumen (mismas reglas y mensajes). Resuelve I10.
 - Fase 1 · Entrega 4 (migración `0010`): `cancelaciones_venta` + `cancelacion_venta_lineas` (append-only, idempotentes), `ReturnsService`, `ui/returns.py` (botón «Registrar devolución» en el detalle de venta). Reintegra a stock solo lo apto (movimiento `ajuste` con `devolucion_venta_linea_id`), `v_devoluciones_no_reintegradas`, `v_saldos_ventas` con `devuelto_reconocido_cop`, `sobrepago_pendiente_cop`, `estado_devolucion`, `estado_cobro` (`reembolso_pendiente`). Reversión de pagos de venta clasificada (`naturaleza_reversion`, `origen_evento`, `evidencia_reversion`).
+- Corrección de selección de productos en líneas de venta y compra (ver KNOWN_ISSUES). Falta validación visual.
 
 **Aprobado y pendiente**: Entregas 5–6b (ver roadmap: saldo a favor y compensaciones, actores/reembolsos físicos/extinción de deuda, parte B del 0011 ( Informe2 §9, Informe3 §4.7) y lo no cubierto del 0009 original (ver roadmap, fila 2b).
 **Sin flujo**: armados de PC, gastos, informes, devoluciones/cancelaciones, saldo a favor.

@@ -230,6 +230,9 @@ class SupplierPage(QWidget):
             QMessageBox.warning(self, "No se pudo cargar el historial del proveedor", str(error))
 
 
+from .product_defaults import ProductFieldBinding
+
+
 class PurchaseLineDialog(QDialog):
     def __init__(self, products: list[dict], parent=None, *, line: dict | None = None) -> None:
         super().__init__(parent)
@@ -264,28 +267,17 @@ class PurchaseLineDialog(QDialog):
         buttons.accepted.connect(self._accept_line)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self.product.currentIndexChanged.connect(self._suggest_description)
+        self.binding = ProductFieldBinding(self.product, self.description, self.cost, "costo_actual_cop")
         if line:
-            index = next((i for i in range(self.product.count())
-                          if self.product.itemData(i)["id"] == line["product_id"]), -1)
-            self.product.setCurrentIndex(index)
+            self.binding.load_existing(line["product_id"], description=line["description"],
+                                       amount=line["unit_cost_cop"])
             self.quantity.setValue(line["quantity"])
-            self.cost.setText(str(line["unit_cost_cop"]))
-            self.description.setPlainText(line["description"])
-        else:
-            if self.product.count():
-                product = self.product.currentData()
-                self.cost.setText(str(product["costo_actual_cop"]))
-                self.description.setPlainText(product["nombre"])
+        elif self.product.count():
+            self.binding.apply_defaults()
         self.line: dict | None = None
 
-    def _suggest_description(self, index: int) -> None:
-        product = self.product.itemData(index)
-        if product and not self.description.toPlainText().strip():
-            self.description.setPlainText(product["nombre"])
-
     def _accept_line(self) -> None:
-        product = self.product.currentData()
+        product = self.binding.sync_for_save()
         if product is None:
             self.error.setText("Registra un producto activo antes de agregar líneas a la compra.")
             return

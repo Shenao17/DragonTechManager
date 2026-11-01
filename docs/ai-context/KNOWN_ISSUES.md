@@ -31,3 +31,10 @@
 - La devolución de ventas ligadas a `armado_pc_id` (I8/P6) no tiene tratamiento especial: no hay flujo de venta de armados.
 - Devoluciones de ventas históricas sin `costo_unitario_historico_cop`: el movimiento usa el costo actual del producto y la pérdida se reporta NULL (no se estima).
 - Autorizador/solicitante/ejecutor son texto declarativo; se valida solo que autorizador ≠ ejecutor.
+
+## Corregido: datos obsoletos al cambiar de producto (2026-10-31)
+- **Síntoma:** al elegir otro producto en el diálogo de línea de venta o de compra, descripción y precio/costo seguían mostrando los del producto anterior; se podía guardar `product_id` de un producto con descripción/precio de otro.
+- **Causa raíz:** `SaleLineDialog._suggest` y `PurchaseLineDialog._suggest_description` rellenaban solo campos *vacíos*; tras la primera selección ya no se actualizaban (y en compras el costo no tenía ninguna señal). El guardado leía los widgets sin verificar que correspondieran al producto seleccionado.
+- **Corrección:** `ui/product_defaults.py` (`ProductFieldBinding`): cambiar de producto restablece siempre descripción y precio/costo al valor del nuevo producto (limpia si se elige «no inventariable»); lo editado después es manual y se respeta; `sync_for_save` reaplica los valores si la selección no coincide con el producto cuyos valores se aplicaron. Editar una línea existente conserva sus valores históricos.
+- **No reproducible / no afectados:** cotizaciones (`ProposalLineDialog` no tiene selector de producto; conserva `product_id` de la línea al editar su texto, por diseño histórico) y ajustes/movimientos de inventario (el producto es fijo y se recarga con `get_product` en cada apertura). No hay validación de servicio que compare descripción/precio con el producto: la descripción es histórica y editable por diseño.
+- Pruebas de regresión: `tests/test_product_selection_ui.py` (11). 8 fallaban antes de la corrección.

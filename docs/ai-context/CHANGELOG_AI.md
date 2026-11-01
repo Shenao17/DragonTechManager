@@ -25,3 +25,6 @@
 - `SalesService.reverse_payment` exige `nature`, `source`, `evidence`; guarda de cancelación ahora usa `estado_cobro`.
 - Corregido en desarrollo: el reintento de una devolución ya agotada validaba disponibilidad antes de detectar el replay; ahora se detecta primero.
 - Pruebas: `tests/test_returns.py` (14, incl. concurrencia), `tests/test_returns_ui.py` (2).
+
+## 2026-10-31 — Corrección: datos obsoletos al seleccionar productos
+- Nuevo `ui/product_defaults.py`; `SaleLineDialog` y `PurchaseLineDialog` lo usan. Sin cambios de servicios, migraciones ni reglas financieras. Pruebas: `tests/test_product_selection_ui.py`; suite completa 193 OK.
