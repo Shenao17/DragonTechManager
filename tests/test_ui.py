@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from tests._schema import LATEST_VERSION, MIGRATION_COUNT
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -338,7 +339,7 @@ class DesktopUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "profile" / "dragontech.sqlite3"
             connection, version = initialize_database(database_path)
-            self.assertEqual(version, 12)
+            self.assertEqual(version, LATEST_VERSION)
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             connection.execute(
                 "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES ('Registro de prueba', '2026-10-24T15:30:00Z', '2026-10-24T15:30:00Z')"
@@ -348,7 +349,7 @@ class DesktopUiTests(unittest.TestCase):
 
             reopened, reopened_version = initialize_database(database_path)
             try:
-                self.assertEqual(reopened_version, 12)
+                self.assertEqual(reopened_version, LATEST_VERSION)
                 self.assertEqual(reopened.execute("SELECT nombre FROM clientes").fetchone()[0], "Registro de prueba")
                 self.assertEqual(reopened.execute("SELECT COUNT(*) FROM clientes").fetchone()[0], 1)
             finally:

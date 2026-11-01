@@ -6,6 +6,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QVBoxLayout,
 )
 
+from dragontech_manager.services.actors import IDENTITY_WARNING
+from .actors import actor_options
 from .pages import format_cop
 from .widgets import build_table
 
@@ -26,22 +28,27 @@ def _combo(options) -> QComboBox:
 
 
 class PaymentReversalDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, actors: list[dict], authorizers: list[dict], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Revertir pago de venta")
         self.setMinimumWidth(620)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("El pago original se conserva. Indica qué ocurrió realmente."))
+        layout.addWidget(QLabel("El pago original se conserva. Indica qué ocurrió realmente. " + IDENTITY_WARNING))
+        layout.itemAt(0).widget().setWordWrap(True)
         form = QFormLayout()
         self.nature = _combo(_NATURES)
         self.source = _combo(_SOURCES)
         self.reason = QLineEdit()
         self.evidence = QLineEdit()
         self.evidence.setPlaceholderText("Extracto, comprobante o conciliación que lo demuestra")
+        self.executor = _combo(actor_options(actors))
+        self.authorizer = _combo(actor_options(authorizers, blank="(sin autorizador)"))
         form.addRow("Naturaleza *", self.nature)
         form.addRow("Origen del evento *", self.source)
         form.addRow("Motivo *", self.reason)
         form.addRow("Evidencia *", self.evidence)
+        form.addRow("Registra *", self.executor)
+        form.addRow("Autoriza (obligatorio al corregir un registro erróneo)", self.authorizer)
         layout.addLayout(form)
         self.error = QLabel()
         self.error.setObjectName("formError")
@@ -60,13 +67,15 @@ class PaymentReversalDialog(QDialog):
 
     def values(self) -> dict:
         return {"reason": self.reason.text().strip(), "nature": self.nature.currentData(),
-                "source": self.source.currentData(), "evidence": self.evidence.text().strip()}
+                "source": self.source.currentData(), "evidence": self.evidence.text().strip(),
+                "executor": self.executor.currentData(), "authorizer": self.authorizer.currentData() or None}
 
 
 class ReturnDialog(QDialog):
     """Captura una devolución parcial o total; no calcula reglas, las valida el servicio."""
 
-    def __init__(self, sale: dict, lines: list[dict], parent=None) -> None:
+    def __init__(self, sale: dict, lines: list[dict], actors: list[dict], authorizers: list[dict],
+                 parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Registrar devolución · {sale['codigo']}")
         self.setMinimumSize(900, 640)
@@ -74,7 +83,8 @@ class ReturnDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
             "Devolver no exige reembolso. Solo las unidades aptas vuelven al inventario; "
-            "las demás se registran como pérdida."))
+            "las demás se registran como pérdida. " + IDENTITY_WARNING))
+        layout.itemAt(0).widget().setWordWrap(True)
         self.table: QTableWidget = build_table(
             ["Concepto", "Disponible", "Devolver", "Reintegrar", "Condición si no se reintegra",
              "Valor reconocido (COP)"],
@@ -98,12 +108,14 @@ class ReturnDialog(QDialog):
         layout.addWidget(self.table, 1)
         form = QFormLayout()
         self.reason = QLineEdit(); self.requester = QLineEdit()
-        self.requester_type = _combo(_REQUESTER_TYPES); self.executor = QLineEdit()
+        self.requester_type = _combo(_REQUESTER_TYPES)
+        self.executor = _combo(actor_options(actors))
+        self.authorizer = _combo(actor_options(authorizers, blank="(sin autorizador)"))
         self.no_restock_reason = QLineEdit()
         self.no_restock_reason.setPlaceholderText("Obligatorio si hay unidades que no vuelven a stock")
         self.adjust_reason = QLineEdit()
         self.adjust_reason.setPlaceholderText("Obligatorio si reconoces menos que el precio")
-        self.authorizer = QLineEdit(); self.reference = QLineEdit()
+        self.reference = QLineEdit()
         for label, widget in (("Motivo de la devolución *", self.reason), ("Solicitante *", self.requester),
                               ("Tipo de solicitante *", self.requester_type),
                               ("Responsable de ejecución *", self.executor),
@@ -154,8 +166,8 @@ class ReturnDialog(QDialog):
         return {"lines": self.lines_payload(), "reason": self.reason.text().strip(),
                 "requester": self.requester.text().strip(),
                 "requester_type": self.requester_type.currentData(),
-                "executor": self.executor.text().strip(),
-                "authorizer": self.authorizer.text().strip(),
+                "executor": self.executor.currentData(),
+                "authorizer": self.authorizer.currentData() or "",
                 "authorization_ref": self.reference.text().strip()}
 
     def _validate(self) -> None:

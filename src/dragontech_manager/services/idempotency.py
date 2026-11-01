@@ -49,6 +49,15 @@ def is_replay(prior: dict | None, request_fingerprint: str) -> bool:
     return True
 
 
+def is_replay_or_legacy(prior: dict | None, request_fingerprint: str, legacy_equal: bool) -> bool:
+    """Como ``is_replay``, pero las filas históricas con clave y sin huella se comparan campo a campo."""
+    if prior is not None and prior.get("huella_solicitud") is None:
+        if not legacy_equal:
+            raise ConflictError("La clave de reintento ya se usó con otra solicitud.")
+        return True
+    return is_replay(prior, request_fingerprint)
+
+
 class IntentKey:
     """Conserva la clave de una intención de UI mientras no se complete.
 

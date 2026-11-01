@@ -24,11 +24,13 @@ class ReturnsRepository:
             """INSERT INTO cancelaciones_venta
                (venta_id, motivo, solicitante, solicitante_tipo, solicitado_en_utc,
                 responsable_ejecucion, ejecutado_en_utc, autorizador, autorizado_en_utc,
-                referencia_autorizacion, fecha_negocio, clave_idempotencia, huella_solicitud)
+                referencia_autorizacion, fecha_negocio, clave_idempotencia, huella_solicitud,
+                solicitante_id, ejecutor_id, autorizador_id, origen_identidad)
                VALUES (:venta_id, :motivo, :solicitante, :solicitante_tipo, :solicitado_en_utc,
                        :responsable_ejecucion, :ejecutado_en_utc, :autorizador, :autorizado_en_utc,
                        :referencia_autorizacion, :fecha_negocio, :clave_idempotencia,
-                       :huella_solicitud) RETURNING *""", values,
+                       :huella_solicitud, :solicitante_id, :ejecutor_id, :autorizador_id,
+                       :origen_identidad) RETURNING *""", values,
         ).fetchone())
 
     def add_line(self, values: dict) -> dict:

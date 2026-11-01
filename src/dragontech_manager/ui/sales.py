@@ -12,19 +12,26 @@ from PySide6.QtWidgets import (
 
 from dragontech_manager.services.errors import ServiceError
 from dragontech_manager.services.idempotency import IntentKey
+from dragontech_manager.services.actors import ActorService
 from dragontech_manager.services.compensations import CompensationService
+from dragontech_manager.services.cash import CashReportService
 from dragontech_manager.services.credit import CreditService
+from dragontech_manager.services.debt import DebtService
 from dragontech_manager.services.returns import ReturnsService
 from .pages import format_cop, format_local_datetime
 from .widgets import EmptyState, build_table, set_cell
+from .actors import ActorsDialog
+from .cancel_sale import CancelSaleDialog
+from .cash import CashDialog
 from .compensations import CompensationsDialog, _pesos, apply_credit_form, compensation_form
 from .product_defaults import ProductFieldBinding
 from .proposals import ProposalPage
+from .debt import DebtDialog
 from .returns import PaymentReversalDialog, ReturnDialog
 
 _SALE_STATES = {"abierta": "Pendiente de pago", "parcial": "Pago parcial",
                 "completada": "Pagada", "cancelada": "Cancelada",
-                "reembolso_pendiente": "Reembolso pendiente"}
+                "reembolso_pendiente": "Reembolso pendiente", "deuda_pendiente": "Deuda por gestionar"}
 
 
 def _integer(text: str, label: str, *, positive: bool = False) -> int:
@@ -298,6 +305,8 @@ class SaleDetailsDialog(QDialog):
         self.returns_service = ReturnsService(service.connection)
         self.compensation_service = CompensationService(service.connection)
         self.credit_service = CreditService(service.connection)
+        self.debt_service = DebtService(service.connection)
+        self.actor_service = ActorService(service.connection)
         self._return_intent = IntentKey()
         self._compensate_intent = IntentKey()
         self._credit_intent = IntentKey()
@@ -334,6 +343,11 @@ class SaleDetailsDialog(QDialog):
                f"Saldo a favor aplicado: {format_cop(self.sale['saldo_favor_aplicado_cop'])}"
                if (self.sale["reembolsos_comprometidos_cop"] or self.sale["credito_generado_cop"]
                    or self.sale["saldo_favor_aplicado_cop"]) else "")
+            + (f"\nDeuda pendiente: {format_cop(self.sale['deuda_pendiente_cop'])} · "
+               f"Condonado: {format_cop(self.sale['condonado_cop'])} · Castigado: {format_cop(self.sale['castigado_cop'])} · "
+               f"Recuperado: {format_cop(self.sale['recuperado_cop'])} · {self.sale['estado_comercial']}"
+               if (self.sale["deuda_pendiente_cop"] or self.sale["condonado_cop"] or self.sale["castigado_cop"]
+                   or self.sale["recuperado_cop"]) else "")
         ))
         lines = build_table(["Concepto", "Cantidad", "Precio unitario", "Subtotal", "SKU"],
                             column_widths=[410, 100, 180, 180, 130], flexible_column=0)
@@ -362,6 +376,12 @@ class SaleDetailsDialog(QDialog):
         self.compensate_button.clicked.connect(self._compensate)
         self.compensations_button = QPushButton("Reembolsos y crédito")
         self.compensations_button.clicked.connect(self._open_compensations)
+        self.cancel_button = QPushButton("Cancelar venta…")
+        self.cancel_button.clicked.connect(self._cancel_sale)
+        controls.addWidget(self.cancel_button)
+        self.debt_button = QPushButton("Deuda y cartera")
+        self.debt_button.clicked.connect(self._open_debt)
+        controls.addWidget(self.debt_button)
         self.apply_credit_button = QPushButton("Aplicar saldo a favor")
         self.apply_credit_button.setEnabled(self.sale["saldo_pendiente_cop"] > 0)
         self.apply_credit_button.clicked.connect(self._apply_credit)
@@ -436,7 +456,10 @@ class SaleDetailsDialog(QDialog):
         if (item.data(Qt.ItemDataRole.UserRole + 1) != "recibo"
                 or item.data(Qt.ItemDataRole.UserRole + 2)):
             return
-        reversal = PaymentReversalDialog(self)
+        lists = self._actor_lists()
+        if lists is None:
+            return
+        reversal = PaymentReversalDialog(*lists, self)
         if reversal.exec() != QDialog.DialogCode.Accepted:
             return
         details = reversal.values()
@@ -454,9 +477,45 @@ class SaleDetailsDialog(QDialog):
         except (ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo revertir el pago", str(error))
 
+    def _actor_lists(self, *, authorizers_required: bool = False):
+        """Actores activos y autorizadores; sin directorio no se opera (Informe3 §3.5 C2)."""
+        actors = self.actor_service.list_actors()
+        authorizers = self.actor_service.list_authorizers()
+        if not actors or (authorizers_required and not authorizers):
+            answer = QMessageBox.question(
+                self, "Directorio de actores",
+                "Esta operación requiere actores del directorio" +
+                (" y al menos un autorizador" if authorizers_required else "") +
+                ". ¿Abrir el directorio para registrarlos?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Yes)
+            if answer == QMessageBox.StandardButton.Yes:
+                ActorsDialog(self.actor_service, self).exec()
+            return None
+        return actors, authorizers
+
+    def _cancel_sale(self) -> None:
+        dialog = CancelSaleDialog(
+            lambda: self.returns_service.cancellation_status(self.sale_id),
+            {"return": self._return, "compensate": self._compensate, "debt": self._open_debt}, self)
+        dialog.exec()
+        self._render()
+
+    def _open_debt(self) -> None:
+        if not self.actor_service.list_actors():
+            self._actor_lists()
+        dialog = DebtDialog(self.debt_service, self.sale_id,
+                            self.compensation_service.methods.list_methods("cliente"), self)
+        dialog.exec()
+        if dialog.changed:
+            self.changed = True
+        self._render()
+
     def _compensate(self) -> None:
         methods = self.compensation_service.methods.list_methods("cliente")
-        dialog = compensation_form(self.sale, methods, self)
+        lists = self._actor_lists(authorizers_required=True)
+        if lists is None:
+            return
+        dialog = compensation_form(self.sale, methods, *lists, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -499,7 +558,10 @@ class SaleDetailsDialog(QDialog):
         if balance <= 0:
             QMessageBox.information(self, "Sin saldo a favor", "El cliente no tiene saldo a favor disponible.")
             return
-        dialog = apply_credit_form(balance, self.sale["saldo_pendiente_cop"], self)
+        lists = self._actor_lists()
+        if lists is None:
+            return
+        dialog = apply_credit_form(balance, self.sale["saldo_pendiente_cop"], lists[0], self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -517,7 +579,10 @@ class SaleDetailsDialog(QDialog):
             self._render()
 
     def _return(self) -> None:
-        dialog = ReturnDialog(self.sale, self.returns_service.returnable_lines(self.sale_id), self)
+        lists = self._actor_lists()
+        if lists is None:
+            return
+        dialog = ReturnDialog(self.sale, self.returns_service.returnable_lines(self.sale_id), *lists, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -578,8 +643,12 @@ class SalesPage(QWidget):
         self.create_button = QPushButton("＋ Nueva venta")
         self.create_button.setObjectName("primaryButton")
         self.detail_button = QPushButton("Ver detalle y pagos")
+        self.actors_button = QPushButton("Actores…")
+        self.cash_button = QPushButton("Arqueo de caja…")
         tools.addWidget(self.create_button)
         tools.addWidget(self.detail_button)
+        tools.addWidget(self.actors_button)
+        tools.addWidget(self.cash_button)
         layout.addLayout(tools)
         self.table = build_table(["Venta", "Cliente", "Fecha", "Total", "Pagado", "Saldo", "Estado"],
                                  column_widths=[240, 300, 150, 190, 190, 190, 160], flexible_column=1)
@@ -608,6 +677,8 @@ class SalesPage(QWidget):
         self.next.clicked.connect(self._next)
         self.create_button.clicked.connect(self._create)
         self.detail_button.clicked.connect(self._open_selected)
+        self.actors_button.clicked.connect(self._open_actors)
+        self.cash_button.clicked.connect(self._open_cash)
         self.table.cellDoubleClicked.connect(lambda *_: self._open_selected())
         self.table.itemSelectionChanged.connect(self._sync)
         self.refresh()
@@ -666,6 +737,12 @@ class SalesPage(QWidget):
 
     def _sync(self) -> None:
         self.detail_button.setEnabled(self._selected_id() is not None)
+
+    def _open_cash(self) -> None:
+        CashDialog(CashReportService(self.service.connection), self).exec()
+
+    def _open_actors(self) -> None:
+        ActorsDialog(ActorService(self.service.connection), self).exec()
 
     def _create(self) -> None:
         try:

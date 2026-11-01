@@ -4,6 +4,7 @@ import sqlite3
 import shutil
 import tempfile
 import unittest
+from tests._schema import LATEST_VERSION, MIGRATION_COUNT
 from contextlib import closing
 from pathlib import Path
 
@@ -27,7 +28,7 @@ class ProposalServiceTests(unittest.TestCase):
         return {"description": description, "quantity": quantity, "unit_price_cop": price}
 
     def test_migration_adds_conditions_and_immutable_history(self) -> None:
-        self.assertEqual(self.version, 12)
+        self.assertEqual(self.version, LATEST_VERSION)
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(cotizaciones)")}
         self.assertIn("condiciones", columns)
         proposal = self.service.create_proposal(self.customer["id"], [self.line()])
@@ -55,7 +56,7 @@ class ProposalServiceTests(unittest.TestCase):
                     "INSERT INTO cotizacion_detalles (cotizacion_id, descripcion, cantidad, precio_unitario_cop) VALUES (1, 'Detalle preservado', 2, 3000)"
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, migrations), 12)
+                self.assertEqual(migrate(connection, migrations), LATEST_VERSION)
                 self.assertEqual(connection.execute("SELECT condiciones FROM cotizaciones WHERE id=1").fetchone()[0], "")
                 self.assertEqual(connection.execute("SELECT descripcion FROM cotizacion_detalles WHERE id=1").fetchone()[0], "Detalle preservado")
                 baseline = connection.execute(

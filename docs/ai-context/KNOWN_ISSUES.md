@@ -48,3 +48,27 @@
 - `compensaciones_cancelacion.cancelacion_id` es opcional: la compensación se calcula a nivel de venta (R2/R3 usan toda la posición), no por devolución individual.
 - Vouchers deterministas `RC-AAAA-######`; la reimpresión física no existe aún (no hay impresión).
 - No hay panel automático de «entregas pendientes de confirmar» al iniciar: se consulta con `v_compensaciones_pendientes` / `CompensationService.pending_deliveries()` y el diálogo «Reembolsos y crédito» de cada venta.
+
+## Notas Entrega 6
+- **Identidad declarativa** (ID6): el directorio no autentica; cualquiera puede elegir cualquier actor. La UI lo advierte. Los servicios aún aceptan texto libre (origen `legado`) por compatibilidad programática; la UI solo usa el directorio y pide registrar actores si está vacío.
+- Límite de autorización `NULL` = pendiente: el actor no puede autorizar importes hasta que el propietario lo fije (ID2/ID3). No hay excepción para una sola persona: autorizador y ejecutor deben ser distintos.
+- Filas anteriores a la 0013 conservan su texto con `origen_identidad` NULL (se muestra como `legado`); no se reescriben.
+- Reversión financiera real: anula solo compromisos **sin preparar** (más recientes primero, hasta que quepan en P). Los `preparada`/`en_investigacion` nunca se auto-anulan (Informe3 §2.5 prevalece sobre Nota §2.6 para ese caso) y quedan bloqueados para entrega por R3; se ven en `compromisos_sin_respaldo_cop`.
+- H solo cubre la deuda que no cabe en un pago normal de la venta (Nota §5.4); el resto se cobra como pago de venta. PA2 (comisiones del banco) no se modela.
+- `saldo_favor_aplicado_cop` en `v_saldos_ordenes` vale 0: el uso de saldo a favor en órdenes sigue deshabilitado (Fase 2); el trigger de pago de orden no suma `U`.
+- Contabilidad de condonación/castigo (A3/A4/PA4): se registran como hechos separados no-caja; su tratamiento contable lo define el contador, no el código.
+
+## Pendientes de cierre de la Fase 1 (actualizado tras los pendientes P1-P3)
+Resueltos: panel de entregas pendientes, reversión de reembolsos entregados y evento `corregida`, cancelación comercial (guarda + asistente), arqueo y entregas del día, `solicitudes_operacion`, huella en pagos de cliente.
+Siguen abiertos:
+1. Validación visual del propietario de los bloques P1-P2 y de las pantallas nuevas (Pendientes, Arqueo de caja, Cancelar venta…, correcciones de entrega).
+2. Solicitudes persistentes aún NO integradas en: pagos y reversiones de proveedor, ajustes y reversiones de inventario, creación de ventas y reversión de pagos de cliente (conservan su idempotencia por tabla de las entregas 2-5).
+3. Los pagos de venta/orden no registran quién los solicitó (`solicitado_por` = «No indicado»): no hay selector de actor en esos diálogos.
+4. Criterios §3.8 #12-#16: dependen de autenticación (ID5, fase posterior).
+5. Arqueo: no es una foto histórica (pendiente/anulado se evalúan hoy) y no guarda conteos físicos (decisión del propietario).
+6. R13-C: no existe la alternativa «anular parcialmente la extinción» en la misma operación (se rechaza y se anula antes por el flujo existente).
+
+## Notas de los pendientes P1-P3
+- Una investigación abierta sobre una entrega ya registrada no cambia los saldos (sigue contando como entregada) pero bloquea nuevos reembolsos de la venta.
+- Reintentar una solicitud pendiente reejecuta el servicio con la carga guardada y la MISMA clave; si la operación ya existía, devuelve el registro original.
+- Solicitudes `pendiente` con detalle «Rechazada: …» son rechazos definitivos con rollback completo; el panel las lista para reintentar o abandonar.

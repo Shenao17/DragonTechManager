@@ -2,6 +2,7 @@
 
 import sqlite3
 import unittest
+from tests._schema import LATEST_VERSION, MIGRATION_COUNT
 
 from dragontech_manager.database.connection import open_database
 from dragontech_manager.database.migrations import migrate
@@ -81,7 +82,7 @@ class OrderTotalsTests(unittest.TestCase):
         self.assertEqual(self.c.execute("SELECT importe_acordado_cop FROM v_ordenes_importes WHERE orden_id = 2").fetchone()[0], 20_000)
 
     def test_migration_is_idempotent_and_integrity_holds(self) -> None:
-        self.assertEqual(migrate(self.c), 12)
+        self.assertEqual(migrate(self.c), LATEST_VERSION)
         self.assertEqual(self.c.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(self.c.execute("PRAGMA foreign_key_check").fetchall(), [])
 

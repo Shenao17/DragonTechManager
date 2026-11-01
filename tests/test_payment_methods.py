@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from tests._schema import LATEST_VERSION, MIGRATION_COUNT
 from uuid import uuid4
 from contextlib import closing
 from pathlib import Path
@@ -140,7 +141,7 @@ class PaymentMethodTests(unittest.TestCase):
                     "INSERT INTO pagos_clientes (venta_id, importe_cop, tipo, metodo, registrado_en_utc) VALUES (1, 1000, 'recibo', 'Tarjeta', ?)",
                     (NIGHT_UTC,))
                 connection.commit()
-                self.assertEqual(migrate(connection, MIGRATIONS), 12)
+                self.assertEqual(migrate(connection, MIGRATIONS), LATEST_VERSION)
                 raw = connection.execute("SELECT metodo_pago_id, fecha_negocio FROM pagos_clientes").fetchone()
                 self.assertEqual((raw[0], raw[1]), (None, None))
                 view = connection.execute(

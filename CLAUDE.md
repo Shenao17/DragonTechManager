@@ -283,3 +283,9 @@ The objective is to deliver a reliable DragonTech Manager 1.0.
 - Inspect Git only when necessary to detect unexpected changes, conflicts, or potential data loss.
 - Never repeat checks already completed in the current session without a concrete reason.
 - Keep Git operations minimal and avoid unnecessary token consumption.
+## Project Status (Phase 1)
+
+- Phase 1 deliveries 1–6 and the follow-up pending items are implemented (migrations 0008–0017; schema version 17). The persistent technical memory is `docs/ai-context/` (read `PROJECT_STATE.md` first, then only what the task needs).
+- Phase 1 is NOT declared closed: see `docs/ai-context/KNOWN_ISSUES.md` → "Pendientes de cierre de la Fase 1" (remaining items) and the owner's visual validation of the new screens.
+- Applied migrations are never edited; new behavior uses new sequential migrations that DROP/CREATE views and triggers (single sources: `v_ordenes_importes`, `v_ventas_posicion`).
+- Actor identity is declarative (no authentication); the UI must always warn about it and use the actor directory.

@@ -39,8 +39,10 @@ class SalesRepository:
                       b.pagado_neto_cop, b.saldo_pendiente_cop, b.sobrepago_pendiente_cop,
                       b.saldo_favor_aplicado_cop, b.reembolsos_comprometidos_cop,
                       b.reembolsos_entregados_cop, b.reembolso_por_entregar_cop,
-                      b.credito_generado_cop, b.exceso_reembolsado_cop,
-                      b.unidades_vendidas, b.unidades_devueltas, b.estado_devolucion,
+                      b.credito_generado_cop, b.exceso_reembolsado_cop, b.compromisos_sin_respaldo_cop,
+                      b.deuda_bruta_cop, b.deuda_pendiente_cop, b.recuperado_cop, b.condonado_cop,
+                      b.castigado_cop, b.residuo_liquidacion_cop, b.estado_liquidacion,
+                      b.estado_comercial, b.unidades_vendidas, b.unidades_devueltas, b.estado_devolucion,
                       b.estado_cobro
                FROM ventas v JOIN clientes c ON c.id = v.cliente_id
                JOIN v_saldos_ventas b ON b.venta_id = v.id WHERE v.id = ?""",
@@ -94,14 +96,14 @@ class SalesRepository:
 
     def create_payment(self, *, sale_id: int, amount_cop: int, method: str, method_id: int,
                        reference: str, timestamp_utc: str, business_date: str,
-                       idempotency_key: str) -> dict:
+                       idempotency_key: str, request_fingerprint: str | None = None) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_clientes
                (venta_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
-                registrado_en_utc, fecha_negocio, clave_idempotencia)
-               VALUES (?, ?, 'recibo', ?, ?, ?, ?, ?, ?) RETURNING *""",
+                registrado_en_utc, fecha_negocio, clave_idempotencia, huella_solicitud)
+               VALUES (?, ?, 'recibo', ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (sale_id, amount_cop, method, method_id, reference, timestamp_utc,
-             business_date, idempotency_key),
+             business_date, idempotency_key, request_fingerprint),
         ).fetchone())
 
     def get_payment(self, payment_id: int) -> dict | None:
@@ -120,14 +122,19 @@ class SalesRepository:
         ).fetchone() is not None
 
     def reverse_payment(self, original: dict, *, reason: str, timestamp_utc: str,
-                        business_date: str, nature: str, source: str, evidence: str) -> dict:
+                        business_date: str, nature: str, source: str, evidence: str,
+                        actors: dict | None = None) -> dict:
+        actors = actors or {}
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_clientes
                (venta_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
                 registrado_en_utc, fecha_negocio, reversa_pago_id, motivo,
-                naturaleza_reversion, origen_evento, evidencia_reversion)
-               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+                naturaleza_reversion, origen_evento, evidencia_reversion,
+                ejecutor_id, autorizador_id, ejecutor_nombre, autorizador_nombre, origen_identidad)
+               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (original["venta_id"], original["importe_cop"], original["metodo"],
              original["metodo_pago_id"], original["referencia"], timestamp_utc,
-             business_date, original["id"], reason, nature, source, evidence),
+             business_date, original["id"], reason, nature, source, evidence,
+             actors.get("ejecutor_id"), actors.get("autorizador_id"), actors.get("ejecutor_nombre"),
+             actors.get("autorizador_nombre") or None, actors.get("origen_identidad")),
         ).fetchone())

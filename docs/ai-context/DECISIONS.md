@@ -21,5 +21,13 @@
 - Ledger con importes con signo: generación > 0, utilización < 0; saldo = suma. Crédito nace por trigger en la misma transacción (clave derivada determinista `compensacion:<id>:generacion`).
 - Voucher determinista `RC-AAAA-<id>`: reintentar o reimprimir devuelve el mismo.
 
+- Entrega 6 (aprobadas por el propietario el 2026-11-01): todas las políticas A1–A6, B1–B7, ID1–ID6, PA1–PA6 como recomendadas; parte B del 0011 = solo `v_historial_financiero_venta` + `saldo_favor_aplicado_cop` (sin historial de órdenes); recuperaciones H en tabla propia `recuperaciones_deuda_venta` (no son pagos de venta).
+- Actores: identidad declarativa, límite NULL = pendiente (no ilimitado), autorizador ≠ ejecutor sin excepción; texto libre permitido solo en servicios (origen `legado`).
+- F usa reembolsos ENTREGADOS (Nota): el compromiso no tiene efecto de residuo hasta la entrega.
+
+- Pendientes de Fase 1 (aprobadas por el propietario el 2026-11-01): R13-C = **rechazar** la corrección que deje H+Q sobre la deuda (nunca anular en silencio); cancelación comercial **sin concepto nuevo** (devolución + cargo como deuda + guarda `cancellation_status` + asistente); arqueo **solo lo diseñado** (entregas efectivas y pendientes/anuladas; conteo físico solo en pantalla).
+- Solicitudes de operación: se registran antes de ejecutar (transacción propia) y se completan en la transacción del negocio. Un rechazo definitivo deja la solicitud `pendiente` con el motivo en `detalle` (se puede reintentar o abandonar); abandonar retira la clave. `carga_util` y `resumen` se añadieron al diseño de Informe2 para poder reintentar tras un reinicio.
+- Una entrega «no ocurrida» queda como estado `anulada` + marca `liberada` (los saldos no cambian de vista); la entrega original se conserva.
+
 ## Propuestas/pendientes
 Ver `KNOWN_ISSUES.md` (P1–P11 en Informe2 §12 e Informe3 §7).

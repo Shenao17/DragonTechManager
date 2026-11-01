@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from dragontech_manager.database.connection import open_database
 from dragontech_manager.database.migrations import migrate
+from dragontech_manager.services.actors import ActorService
 from dragontech_manager.services.returns import ReturnsService
 from dragontech_manager.services.sales import SalesService
 from dragontech_manager.ui.returns import PaymentReversalDialog, ReturnDialog
@@ -29,18 +30,21 @@ class ReturnsUiTests(unittest.TestCase):
         self.addCleanup(self.c.close)
         migrate(self.c)
         inventory, self.sales, customer, mouse = make_world(self.c)
+        actors = ActorService(self.c)
+        self.cashier = actors.create_actor("Ana Caja", "cajero")
+        self.boss = actors.create_actor("Olga", "propietario", can_authorize=True, limit_cop=10_000_000)
         self.sale = self.sales.create_sale(customer["id"], [
             {"description": "Mouse", "quantity": 2, "unit_price_cop": 30_000, "product_id": mouse["id"]}],
             idempotency_key="ui-sale")
 
     def test_return_dialog_payload_and_details_flow(self) -> None:
         lines = ReturnsService(self.c).returnable_lines(self.sale["id"])
-        dialog = ReturnDialog(self.sale, lines)
+        dialog = ReturnDialog(self.sale, lines, [self.cashier, self.boss], [self.boss])
         with self.assertRaises(ValueError):
             dialog.lines_payload()  # nada que devolver
         dialog.devolver[0].setValue(1)
         self.assertEqual(dialog.reintegrar[0].value(), 1)  # sigue lo devuelto
-        dialog.reason.setText("Desiste"); dialog.requester.setText("Cliente"); dialog.executor.setText("Ana")
+        dialog.reason.setText("Desiste"); dialog.requester.setText("Cliente")
         values = dialog.values()
         self.assertEqual(values["lines"][0]["quantity"], 1)
 
@@ -54,11 +58,13 @@ class ReturnsUiTests(unittest.TestCase):
         self.assertEqual(details.sale["estado_devolucion"], "parcial")
 
     def test_payment_reversal_dialog_requires_motive_and_evidence(self) -> None:
-        dialog = PaymentReversalDialog()
+        dialog = PaymentReversalDialog([self.cashier], [self.boss])
         dialog._validate()
         self.assertTrue(dialog.error.text())
         dialog.reason.setText("Duplicado"); dialog.evidence.setText("Extracto")
-        self.assertEqual(dialog.values()["nature"], "correccion_registro_erroneo")
+        values = dialog.values()
+        self.assertEqual((values["nature"], values["executor"], values["authorizer"]),
+                         ("correccion_registro_erroneo", self.cashier["id"], None))
 
 
 if __name__ == "__main__":

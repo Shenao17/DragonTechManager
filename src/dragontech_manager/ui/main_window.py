@@ -42,6 +42,7 @@ from .sales import SalesWorkspacePage
 from .inventory import InventoryWorkspacePage
 from .order_details import OrderDetailDialog
 from .theme import apply_theme, load_theme_preference, save_theme_preference
+from .pending import PendingOperationsDialog, pending_count
 from .update_worker import UpdateCheckWorker
 
 _NAV_ITEMS = (
@@ -130,6 +131,7 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(page)
         content_layout.addWidget(self.stack, 1)
         root.addWidget(content, 1)
+        self.refresh_pending_indicator()
 
         for key, page in self.pages.items():
             if isinstance(page, DashboardPage):
@@ -219,7 +221,25 @@ class MainWindow(QMainWindow):
         self.action_button.clicked.connect(self._create_current_record)
         self.action_button.hide()
         layout.addWidget(self.action_button)
+        self.pending_button = QPushButton("Pendientes")
+        self.pending_button.setToolTip("Entregas de reembolso por confirmar y solicitudes sin completar")
+        self.pending_button.clicked.connect(self.show_pending_operations)
+        layout.addWidget(self.pending_button)
         return topbar
+
+    def refresh_pending_indicator(self) -> int:
+        count = pending_count(self.connection)
+        self.pending_button.setText(f"Pendientes ({count})" if count else "Pendientes")
+        return count
+
+    def show_pending_operations(self) -> None:
+        PendingOperationsDialog(self.connection, self).exec()
+        self.refresh_pending_indicator()
+
+    def show_pending_operations_on_start(self) -> None:
+        """Al iniciar: si hay entregas o solicitudes sin cerrar, las muestra antes de operar (Informe2 §3.8)."""
+        if self.refresh_pending_indicator():
+            self.show_pending_operations()
 
     def _navigate(self, key: str) -> None:
         if key not in self.pages:

@@ -5,7 +5,7 @@ source .venv/bin/activate
 PYTHONPATH=src QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests
 PYTHONPATH=src python -m unittest tests.test_payment_methods   # Entrega 1
 ```
-- Última ejecución completa: 2026-10-31, 211 pruebas OK (Entrega 5). `PYTHONPATH=src python -m unittest tests.test_idempotency` para la entrega.
+- Última ejecución completa: 2026-10-31, 260 pruebas OK (pendientes de Fase 1). `PYTHONPATH=src python -m unittest tests.test_idempotency` para la entrega.
 - Críticas por módulo: pagos (`test_sales`, `test_services`, `test_inventory`), esquema/migraciones (`test_database_schema`, `test_payment_methods`), respaldos (`test_backup`).
 - Validación manual de UI pendiente: diálogos de pago de venta, orden y compra con combos de catálogo.
 
@@ -26,3 +26,11 @@ Validación visual pendiente: detalle de venta → «Registrar devolución» (pa
 ## Migración 0012 (2026-10-31)
 Copia de la base real (1–11): migra a 12, no reaplica, `v_saldos_ventas` histórica idéntica (4 ventas), tablas conservadas, ledger/compensaciones vacíos, integrity ok, fk vacío. Flujo de prueba en la copia: devolución → compensación mixta (reembolso+crédito) → voucher → entrega → replay idempotente; base nueva v12; original intacta (sha256).
 Validación visual pendiente: detalle de venta con devolución → «Compensar devolución» (reembolso/crédito/mixta), «Reembolsos y crédito» (preparar voucher, confirmar entrega, anular, investigar) y «Aplicar saldo a favor» en otra venta del mismo cliente.
+
+## Migraciones 0013-0014 (2026-11-01)
+Copia de la base real (1–12): migra a 14, no reaplica, 5 ventas y 5 órdenes con saldos idénticos antes/después, tablas históricas conservadas, suma de residuo del historial = residuo de liquidación por venta, integrity ok, fk vacío; condonación de una deuda real de la copia (venta impaga) + reintento idempotente; base nueva v14; original intacta (sha256).
+Validación visual pendiente: «Actores…» (Ventas), devolución/compensación/crédito/reversión de pago con selectores de actores, «Deuda y cartera» (condonar, castigar, anular, recuperación) y el aviso de identidad declarativa.
+
+## Migraciones 0015-0017 (2026-11-01)
+Copia de la base real (1-14): migra a 17, no reaplica; `v_saldos_ventas`, `v_saldos_ordenes` y `v_historial_financiero_venta` idénticos antes/después; tablas históricas conservadas; 10 pagos históricos con clave sin huella respetados; integrity ok, fk vacío; pago con fallo simulado → solicitud pendiente → reintento con la misma clave → un solo pago; base nueva v17; original intacta (sha256). La copia contiene una compensación en investigación (de tus pruebas): aparecerá en el panel de pendientes.
+Validación visual pendiente: botón «Pendientes» y panel al iniciar (entregas por confirmar; solicitudes con Reintentar/Abandonar), «Corregir datos de la entrega» / «Declarar que la entrega no ocurrió» en «Reembolsos y crédito», «Arqueo de caja…» (Ventas), «Cancelar venta…» (detalle de venta).

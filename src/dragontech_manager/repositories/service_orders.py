@@ -286,14 +286,15 @@ class ServiceOrderRepository:
         timestamp_utc: str,
         business_date: str,
         idempotency_key: str,
+        request_fingerprint: str | None = None,
     ) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_clientes
                (orden_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
-                registrado_en_utc, fecha_negocio, clave_idempotencia)
-               VALUES (?, ?, 'recibo', ?, ?, ?, ?, ?, ?) RETURNING *""",
+                registrado_en_utc, fecha_negocio, clave_idempotencia, huella_solicitud)
+               VALUES (?, ?, 'recibo', ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (order_id, amount_cop, method, method_id, reference, timestamp_utc,
-             business_date, idempotency_key),
+             business_date, idempotency_key, request_fingerprint),
         ).fetchone())
     def get_payment(self, payment_id: int) -> dict | None:
         return row_dict(self.connection.execute(

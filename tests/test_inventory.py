@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from tests._schema import LATEST_VERSION, MIGRATION_COUNT
 from uuid import uuid4
 from pathlib import Path
 
@@ -33,7 +34,7 @@ class InventoryProcurementTests(unittest.TestCase):
         )
 
     def test_migration_six_adds_fields_and_guards_stock(self) -> None:
-        self.assertEqual(self.version, 12)
+        self.assertEqual(self.version, LATEST_VERSION)
         product_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(productos)")}
         supplier_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(proveedores)")}
         detail_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(compra_detalles)")}
@@ -92,7 +93,7 @@ class InventoryProcurementTests(unittest.TestCase):
                     "INSERT INTO compra_detalles (compra_id, producto_id, cantidad, costo_unitario_historico_cop) VALUES (1, 1, 2, 8000)"
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, migrations), 12)
+                self.assertEqual(migrate(connection, migrations), LATEST_VERSION)
                 self.assertEqual(connection.execute("SELECT nombre FROM productos WHERE id=1").fetchone()[0], "Producto anterior")
                 self.assertEqual(connection.execute("SELECT cantidad FROM compra_detalles WHERE id=1").fetchone()[0], 2)
                 self.assertEqual(connection.execute("SELECT descripcion_historica FROM compra_detalles WHERE id=1").fetchone()[0], "")

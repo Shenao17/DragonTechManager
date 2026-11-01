@@ -135,4 +135,5 @@ def main(argv: list[str] | None = None) -> int:
         schema_version=schema_version,
     )
     window.show()
+    window.show_pending_operations_on_start()
     return app.exec()

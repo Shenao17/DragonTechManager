@@ -12,6 +12,8 @@ from dragontech_manager.repositories.service_orders import ServiceOrderRepositor
 from dragontech_manager.business_date import business_date_from_utc
 from .payment_methods import PaymentMethodService
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
+from . import idempotency
+from .operations import OperationRegistry
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
 _ORDER_STATES = {
@@ -40,6 +42,7 @@ class ServiceOrderService:
         self.equipment = EquipmentRepository(connection)
         self.orders = ServiceOrderRepository(connection)
         self.methods = PaymentMethodService(connection)
+        self.operations = OperationRegistry(connection)
 
     def open_service_order(
         self,
@@ -422,44 +425,51 @@ class ServiceOrderService:
         reference_value = optional_text(reference, "La referencia", none_as_empty=True)
         key = self._key(idempotency_key)
         timestamp, _ = timestamp_and_business_year()
-        try:
-            with atomic(self.connection):
-                prior = self.orders.get_payment_by_key(key)
-                if prior:
-                    if (
-                        prior["orden_id"] != order_id
-                        or prior["importe_cop"] != amount
-                        or prior["metodo_pago_id"] != method_row["id"]
-                        or prior["referencia"] != reference_value
-                        or prior["tipo"] != "recibo"
-                    ):
-                        raise ConflictError("La clave de reintento ya se usó con otro pago.")
-                    balance = self.get_order_balance(order_id)
-                    return {"pago": prior, "balance": balance, "repetido": True}
-                order = self.orders.get(order_id)
-                if order is None:
-                    raise NotFoundError("No se encontró la orden asociada al pago.")
-                if order["estado"] == "cancelada":
-                    raise ConflictError("No se aceptan pagos para una orden cancelada.")
-                balance = self.orders.financial_summary(order_id)
-                if balance is None:
-                    raise NotFoundError("No se encontró el estado financiero de la orden.")
-                if amount > balance["saldo_pendiente_cop"]:
-                    raise ValidationError("El pago supera el saldo pendiente de la orden.")
-                payment = self.orders.create_payment(
-                    order_id=order_id,
-                    amount_cop=amount,
-                    method=method_row["nombre"],
-                    method_id=method_row["id"],
-                    reference=reference_value or "",
-                    timestamp_utc=timestamp,
-                    business_date=business_date_from_utc(timestamp),
-                    idempotency_key=key,
-                )
-                new_balance = self.orders.financial_summary(order_id)
-                return {"pago": payment, "balance": new_balance, "repetido": False}
-        except sqlite3.IntegrityError as error:
-            raise translate_integrity_error(error) from error
+        request_fp = idempotency.fingerprint({
+            "op": "pago_orden", "orden_id": order_id, "importe_cop": amount,
+            "metodo_pago_id": method_row["id"], "referencia": reference_value or ""})
+        payload = {"order_id": order_id, "amount_cop": amount, "method": method_row["id"],
+                   "reference": reference_value or ""}
+        with self.operations.track(key, "pago_orden", request_fp, "No indicado", payload,
+                                   f"Pago de {amount} a la orden #{order_id} ({method_row['nombre']})") as tracker:
+            try:
+                with atomic(self.connection):
+                    prior = self.orders.get_payment_by_key(key)
+                    legacy_equal = (prior is not None and prior["orden_id"] == order_id
+                                    and prior["importe_cop"] == amount
+                                    and prior["metodo_pago_id"] == method_row["id"]
+                                    and prior["referencia"] == (reference_value or "") and prior["tipo"] == "recibo")
+                    if idempotency.is_replay_or_legacy(prior, request_fp, legacy_equal):
+                        tracker.complete("pago_cliente", prior["id"])
+                        balance = self.get_order_balance(order_id)
+                        return {"pago": prior, "balance": balance, "repetido": True}
+                    order = self.orders.get(order_id)
+                    if order is None:
+                        raise NotFoundError("No se encontró la orden asociada al pago.")
+                    if order["estado"] == "cancelada":
+                        raise ConflictError("No se aceptan pagos para una orden cancelada.")
+                    balance = self.orders.financial_summary(order_id)
+                    if balance is None:
+                        raise NotFoundError("No se encontró el estado financiero de la orden.")
+                    if amount > balance["saldo_pendiente_cop"]:
+                        raise ValidationError("El pago supera el saldo pendiente de la orden.")
+                    payment = self.orders.create_payment(
+                        order_id=order_id,
+                        amount_cop=amount,
+                        method=method_row["nombre"],
+                        method_id=method_row["id"],
+                        reference=reference_value or "",
+                        timestamp_utc=timestamp,
+                        business_date=business_date_from_utc(timestamp),
+                        idempotency_key=key,
+                        request_fingerprint=request_fp,
+                    )
+                    tracker.complete("pago_cliente", payment["id"])
+                    new_balance = self.orders.financial_summary(order_id)
+                    return {"pago": payment, "balance": new_balance, "repetido": False}
+            except sqlite3.IntegrityError as error:
+                raise translate_integrity_error(error) from error
+
     def reverse_payment(self, payment_id: int, *, reason: str) -> dict:
         payment_id = positive_id(payment_id, "El pago")
         reason_value = required_text(reason, "El motivo de reversión")

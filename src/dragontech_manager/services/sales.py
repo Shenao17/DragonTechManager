@@ -10,8 +10,11 @@ from dragontech_manager.repositories.inventory import InventoryRepository
 from dragontech_manager.repositories.proposals import ProposalRepository
 from dragontech_manager.repositories.sales import SalesRepository
 from dragontech_manager.business_date import business_date_from_utc
+from .actors import ActorService
+from .operations import OperationRegistry
 from .payment_methods import PaymentMethodService
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
+from . import idempotency
 from .idempotency import fingerprint as _fingerprint
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
@@ -30,6 +33,7 @@ class SalesService:
         self.inventory = InventoryRepository(connection)
         self.proposals = ProposalRepository(connection)
         self.methods = PaymentMethodService(connection)
+        self.operations = OperationRegistry(connection)
 
     @staticmethod
     def _key(value: object) -> str:
@@ -234,7 +238,7 @@ class SalesService:
     def list_sales(self, *, search: str | None = None, state: str | None = None,
                    date_from: str | None = None, date_to: str | None = None,
                    limit: int = 100, offset: int = 0) -> list[dict]:
-        if state is not None and state not in {"abierta", "parcial", "completada", "cancelada", "reembolso_pendiente"}:
+        if state is not None and state not in {"abierta", "parcial", "completada", "cancelada", "reembolso_pendiente", "deuda_pendiente"}:
             raise ValidationError("El filtro de estado de venta no es válido.")
         for value, label in ((date_from, "La fecha inicial"), (date_to, "La fecha final")):
             if value is not None:
@@ -257,35 +261,43 @@ class SalesService:
         reference_value = optional_text(reference, "La referencia", none_as_empty=True)
         key = self._key(idempotency_key)
         timestamp, _ = timestamp_and_business_year()
-        try:
-            with atomic(self.connection):
-                prior = self.sales.get_payment_by_key(key)
-                if prior:
-                    if (prior["venta_id"] != sale_id or prior["importe_cop"] != amount_cop
-                            or prior["metodo_pago_id"] != method_row["id"]
-                            or prior["referencia"] != reference_value
-                            or prior["tipo"] != "recibo"):
-                        raise ConflictError("La clave de reintento ya se usó con otro pago.")
-                    return {"pago": prior, "venta": self.get_sale(sale_id), "repetido": True}
-                sale = self.sales.get_sale(sale_id)
-                if sale is None:
-                    raise NotFoundError("No se encontró la venta asociada al pago.")
-                if sale["estado_cobro"] == "cancelada":
-                    raise ConflictError("No se aceptan pagos para una venta cancelada.")
-                if amount_cop > sale["saldo_pendiente_cop"]:
-                    raise ValidationError("El pago supera el saldo pendiente de la venta.")
-                payment = self.sales.create_payment(
-                    sale_id=sale_id, amount_cop=amount_cop, method=method_row["nombre"],
-                    method_id=method_row["id"], reference=reference_value or "",
-                    timestamp_utc=timestamp, business_date=business_date_from_utc(timestamp),
-                    idempotency_key=key,
-                )
-                return {"pago": payment, "venta": self.get_sale(sale_id), "repetido": False}
-        except sqlite3.IntegrityError as error:
-            raise translate_integrity_error(error) from error
+        request_fp = _fingerprint({"op": "pago_venta", "venta_id": sale_id, "importe_cop": amount_cop,
+                                   "metodo_pago_id": method_row["id"], "referencia": reference_value or ""})
+        payload = {"sale_id": sale_id, "amount_cop": amount_cop, "method": method_row["id"],
+                   "reference": reference_value or ""}
+        with self.operations.track(key, "pago_venta", request_fp, "No indicado", payload,
+                                   f"Pago de {amount_cop} a la venta #{sale_id} ({method_row['nombre']})") as tracker:
+            try:
+                with atomic(self.connection):
+                    prior = self.sales.get_payment_by_key(key)
+                    legacy_equal = (prior is not None and prior["venta_id"] == sale_id
+                                    and prior["importe_cop"] == amount_cop
+                                    and prior["metodo_pago_id"] == method_row["id"]
+                                    and prior["referencia"] == (reference_value or "") and prior["tipo"] == "recibo")
+                    if idempotency.is_replay_or_legacy(prior, request_fp, legacy_equal):
+                        tracker.complete("pago_cliente", prior["id"])
+                        return {"pago": prior, "venta": self.get_sale(sale_id), "repetido": True}
+                    sale = self.sales.get_sale(sale_id)
+                    if sale is None:
+                        raise NotFoundError("No se encontró la venta asociada al pago.")
+                    if sale["estado_cobro"] == "cancelada":
+                        raise ConflictError("No se aceptan pagos para una venta cancelada.")
+                    if amount_cop > sale["saldo_pendiente_cop"]:
+                        raise ValidationError("El pago supera el saldo pendiente de la venta.")
+                    payment = self.sales.create_payment(
+                        sale_id=sale_id, amount_cop=amount_cop, method=method_row["nombre"],
+                        method_id=method_row["id"], reference=reference_value or "",
+                        timestamp_utc=timestamp, business_date=business_date_from_utc(timestamp),
+                        idempotency_key=key, request_fingerprint=request_fp,
+                    )
+                    tracker.complete("pago_cliente", payment["id"])
+                    return {"pago": payment, "venta": self.get_sale(sale_id), "repetido": False}
+            except sqlite3.IntegrityError as error:
+                raise translate_integrity_error(error) from error
 
     def reverse_payment(self, payment_id: int, *, reason: str, nature: str, source: str,
-                        evidence: str) -> dict:
+                        evidence: str, executor: str | int | None = None,
+                        authorizer: str | int | None = None) -> dict:
         """Revierte un pago de venta sin tocar el original.
 
         ``nature`` distingue ``correccion_registro_erroneo`` (el dinero nunca ingresó)
@@ -299,6 +311,12 @@ class SalesService:
         if source not in _REVERSAL_SOURCES:
             raise ValidationError("Indica el origen del evento: banco, operador, conciliación u otro.")
         evidence_value = required_text(evidence, "La evidencia de la reversión")
+        # Con actores del directorio, corregir un registro erróneo exige autorizador (Nota §2.6).
+        directory = isinstance(executor, int) and not isinstance(executor, bool)
+        who = None
+        if executor is not None:
+            who = ActorService(self.connection).identify(
+                executor, authorizer, authorizer_required=directory and nature == "correccion_registro_erroneo")
         timestamp, _ = timestamp_and_business_year()
         try:
             with atomic(self.connection):
@@ -312,7 +330,7 @@ class SalesService:
                 reversal = self.sales.reverse_payment(
                     original, reason=reason_value, timestamp_utc=timestamp,
                     business_date=business_date_from_utc(timestamp),
-                    nature=nature, source=source, evidence=evidence_value)
+                    nature=nature, source=source, evidence=evidence_value, actors=who)
                 return {"pago": reversal, "venta": self.get_sale(original["venta_id"])}
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error

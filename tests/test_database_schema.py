@@ -4,6 +4,7 @@ import sqlite3
 import shutil
 import tempfile
 import unittest
+from tests._schema import LATEST_VERSION, MIGRATION_COUNT
 from contextlib import closing
 from pathlib import Path
 
@@ -18,7 +19,7 @@ class DatabaseSchemaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.connection = open_database(":memory:")
         self.addCleanup(self.connection.close)
-        self.assertEqual(migrate(self.connection), 12)
+        self.assertEqual(migrate(self.connection), LATEST_VERSION)
         self.connection.execute(
             "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES (?, ?, ?)",
             ("Cliente de prueba", UTC, UTC),
@@ -56,10 +57,10 @@ class DatabaseSchemaTests(unittest.TestCase):
             )
         }
         self.assertTrue(expected <= actual)
-        self.assertEqual(migrate(self.connection), 12)
+        self.assertEqual(migrate(self.connection), LATEST_VERSION)
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
-            12,
+            MIGRATION_COUNT,
         )
 
     def test_foreign_keys_restrict_orphan_records_and_integrity_check_passes(self) -> None:
@@ -467,7 +468,7 @@ class DatabaseSchemaTests(unittest.TestCase):
                     (UTC, UTC),
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, project_migrations), 12)
+                self.assertEqual(migrate(connection, project_migrations), LATEST_VERSION)
                 self.assertEqual(
                     connection.execute("SELECT nombre FROM clientes").fetchone()[0],
                     "Preservado",
@@ -503,7 +504,7 @@ class DatabaseSchemaTests(unittest.TestCase):
                     (UTC, UTC, UTC),
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, project_migrations), 12)
+                self.assertEqual(migrate(connection, project_migrations), LATEST_VERSION)
                 self.assertEqual(
                     connection.execute("SELECT estado FROM ordenes_servicio WHERE id=1").fetchone()[0],
                     "en_proceso",
@@ -545,7 +546,7 @@ class DatabaseSchemaTests(unittest.TestCase):
                     (UTC, UTC, UTC),
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, project_migrations), 12)
+                self.assertEqual(migrate(connection, project_migrations), LATEST_VERSION)
                 order = connection.execute(
                     "SELECT problema_reportado, diagnostico, trabajo_realizado, pruebas_realizadas, estado FROM ordenes_servicio WHERE id=1"
                 ).fetchone()

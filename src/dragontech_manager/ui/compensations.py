@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
 
 from dragontech_manager.services.errors import ServiceError
 from dragontech_manager.services.idempotency import IntentKey
+from dragontech_manager.services.actors import IDENTITY_WARNING
+from .actors import actor_options
 from .pages import format_cop
 from .widgets import build_table, set_cell
 
@@ -76,18 +78,21 @@ class FormDialog(QDialog):
         return result
 
 
-def compensation_form(sale: dict, methods: list[dict], parent=None) -> FormDialog:
+def compensation_form(sale: dict, methods: list[dict], actors: list[dict], authorizers: list[dict],
+                      parent=None) -> FormDialog:
     available = sale["sobrepago_pendiente_cop"]
     return FormDialog(
         "Compensar devolución",
         f"Sobrepago pendiente de compensar: {format_cop(available)}. Puedes reembolsar, acreditar "
-        "como saldo a favor o repartir entre ambos. Requiere autorizador distinto del ejecutor.",
+        "como saldo a favor o repartir entre ambos. Requiere autorizador distinto del ejecutor. "
+        + IDENTITY_WARNING,
         [("refund", "Reembolso (COP)", "text", str(available)), ("credit", "Saldo a favor (COP)", "text", ""),
          ("method", "Medio del reembolso", "combo",
           [(m["nombre"], m["id"]) for m in methods if m["familia"] in {"efectivo", "transferencia", "tarjeta"}]),
          ("consent", "El cliente acepta recibir saldo a favor en lugar de efectivo", "check"),
-         ("reason", "Motivo *", "text"), ("executor", "Responsable de ejecución *", "text"),
-         ("authorizer", "Autorizador *", "text"), ("authorization_ref", "Referencia de autorización *", "text")],
+         ("reason", "Motivo *", "text"), ("executor", "Responsable de ejecución *", "combo", actor_options(actors)),
+         ("authorizer", "Autorizador *", "combo", actor_options(authorizers)),
+         ("authorization_ref", "Referencia de autorización *", "text")],
         parent)
 
 
@@ -111,7 +116,9 @@ class CompensationsDialog(QDialog):
         for key, text, handler in (("prepare", "Preparar voucher", self._prepare),
                                    ("deliver", "Confirmar entrega", self._deliver),
                                    ("annul", "Anular", self._annul),
-                                   ("investigate", "Marcar en investigación", self._investigate)):
+                                   ("investigate", "Marcar en investigación", self._investigate),
+                                   ("correct", "Corregir datos de la entrega", self._correct),
+                                   ("not_occurred", "Declarar que la entrega no ocurrió", self._not_occurred)):
             button = QPushButton(text)
             button.clicked.connect(handler)
             row.addWidget(button)
@@ -134,7 +141,9 @@ class CompensationsDialog(QDialog):
         for row, item in enumerate(self.items):
             values = ("Reembolso" if item["tipo"] == "reembolso" else "Saldo a favor",
                       format_cop(item["importe_cop"]), item["metodo_nombre"] or "—",
-                      _STATES[item["estado"]], item["voucher_codigo"] or "—", item["autorizador"])
+                      _STATES[item["estado"]] + (" · en investigación" if item.get("en_investigacion") and item["estado"] != "en_investigacion" else "")
+                      + (" · entrega no ocurrió" if item.get("liberada") else ""),
+                      item["voucher_codigo"] or "—", item["autorizador"])
             for col, value in enumerate(values):
                 set_cell(self.table, row, col, value)
             self.table.setRowHeight(row, 46)
@@ -149,8 +158,12 @@ class CompensationsDialog(QDialog):
         state = item["estado"] if item and item["tipo"] == "reembolso" else None
         self.buttons["prepare"].setEnabled(state == "comprometida")
         self.buttons["deliver"].setEnabled(state in {"comprometida", "preparada", "en_investigacion"})
-        self.buttons["annul"].setEnabled(state in {"comprometida", "preparada", "en_investigacion"})
-        self.buttons["investigate"].setEnabled(state == "preparada")
+        self.buttons["annul"].setEnabled(state in {"comprometida", "preparada", "en_investigacion"} and not flagged_delivered(item))
+        delivered = state in {"entregada", "corregida"}
+        flagged = bool(item and item.get("en_investigacion"))
+        self.buttons["investigate"].setEnabled((state == "preparada" or delivered) and not flagged)
+        self.buttons["correct"].setEnabled(delivered)
+        self.buttons["not_occurred"].setEnabled(delivered and flagged)
 
     def _run(self, name: str, dialog: FormDialog | None, call) -> None:
         item = self._selected()
@@ -175,9 +188,15 @@ class CompensationsDialog(QDialog):
         finally:
             self._render()
 
+    def _actors(self) -> list[tuple[str, object]]:
+        return actor_options(self.service.actors.list_actors())
+
+    def _authorizers(self) -> list[tuple[str, object]]:
+        return actor_options(self.service.actors.list_authorizers())
+
     def _prepare(self) -> None:
         dialog = FormDialog("Preparar voucher", "Se genera el voucher de la entrega; reimprimirlo no crea otro.",
-                            [("by", "Registrado por *", "text")], self)
+                            [("by", "Registrado por *", "combo", self._actors())], self)
         self._run("prepare", dialog, lambda item, v, key: self.service.prepare(
             item["id"], registered_by=v["by"], idempotency_key=key))
 
@@ -189,7 +208,7 @@ class CompensationsDialog(QDialog):
             "Confirmar entrega", "Registra que el dinero ya salió. Solo se confirma una vez. En transferencias "
             "y tarjetas la referencia es obligatoria.",
             [("medium", "Medio", "combo", list(_MEDIA)), ("reference", "Referencia externa", "text"),
-             ("by", "Registrado por *", "text")], self)
+             ("by", "Registrado por *", "combo", self._actors())], self)
         medium = dialog.widgets["medium"]
         medium.setCurrentIndex(max(0, medium.findData((item.get("metodo_familia") or "efectivo"))))
         self._run("deliver", dialog, lambda it, v, key: self.service.confirm_delivery(
@@ -198,23 +217,56 @@ class CompensationsDialog(QDialog):
 
     def _annul(self) -> None:
         dialog = FormDialog("Anular compromiso", "Libera el tope del reembolso. Requiere autorizador distinto.",
-                            [("reason", "Motivo *", "text"), ("by", "Registrado por *", "text"),
-                             ("authorizer", "Autorizador *", "text"), ("ref", "Referencia de autorización *", "text")], self)
+                            [("reason", "Motivo *", "text"), ("by", "Registrado por *", "combo", self._actors()),
+                             ("authorizer", "Autorizador *", "combo", self._authorizers()),
+                             ("ref", "Referencia de autorización *", "text")], self)
         self._run("annul", dialog, lambda item, v, key: self.service.annul(
             item["id"], reason=v["reason"], registered_by=v["by"], authorizer=v["authorizer"],
             authorization_ref=v["ref"], idempotency_key=key))
 
+    def _correct(self) -> None:
+        dialog = FormDialog(
+            "Corregir datos de la entrega", "Evento nuevo y autorizado; la entrega original se conserva y no cambia ningún importe. "
+            "Completa solo lo que corriges.",
+            [("medium", "Medio", "combo", [("(sin cambio)", "")] + list(_MEDIA)), ("reference", "Referencia externa", "text"),
+             ("occurred", "Fecha efectiva (AAAA-MM-DDTHH:MM:SSZ)", "text"), ("receiver", "Receptor", "text"),
+             ("reason", "Motivo *", "text"), ("by", "Registrado por *", "combo", self._actors()),
+             ("authorizer", "Autorizador *", "combo", self._authorizers()),
+             ("ref", "Referencia de autorización *", "text")], self)
+        self._run("correct", dialog, lambda item, v, key: self.service.correct_delivery_data(
+            item["id"], reason=v["reason"], registered_by=v["by"], authorizer=v["authorizer"],
+            authorization_ref=v["ref"], idempotency_key=key, medium=v["medium"] or None,
+            external_reference=v["reference"] or None, occurred_at_utc=v["occurred"] or None,
+            receiver=v["receiver"] or None))
+
+    def _not_occurred(self) -> None:
+        dialog = FormDialog(
+            "La entrega no ocurrió", "Libera el compromiso: el dinero vuelve a quedar como sobrepago por compensar. "
+            "Requiere la investigación abierta, evidencia y autorizador distinto. La entrega registrada se conserva.",
+            [("reason", "Motivo *", "text"), ("evidence", "Evidencia (arqueo, voucher sin firma, extracto…) *", "text"),
+             ("by", "Registrado por *", "combo", self._actors()),
+             ("authorizer", "Autorizador *", "combo", self._authorizers()),
+             ("ref", "Referencia de autorización *", "text")], self)
+        self._run("not_occurred", dialog, lambda item, v, key: self.service.report_delivery_not_occurred(
+            item["id"], reason=v["reason"], evidence=v["evidence"], registered_by=v["by"],
+            authorizer=v["authorizer"], authorization_ref=v["ref"], idempotency_key=key))
+
     def _investigate(self) -> None:
         dialog = FormDialog("Marcar en investigación",
                             "Bloquea nuevas entregas y reembolsos de esta venta hasta resolver.",
-                            [("reason", "Motivo *", "text"), ("by", "Registrado por *", "text")], self)
+                            [("reason", "Motivo *", "text"), ("by", "Registrado por *", "combo", self._actors())], self)
         self._run("investigate", dialog, lambda item, v, key: self.service.mark_under_investigation(
             item["id"], reason=v["reason"], registered_by=v["by"], idempotency_key=key))
 
 
-def apply_credit_form(balance: int, pending: int, parent=None) -> FormDialog:
+def flagged_delivered(item: dict | None) -> bool:
+    """Una entrega ya registrada bajo investigación no se anula: se corrige o se declara no ocurrida."""
+    return bool(item and item.get("en_investigacion") and item["estado"] in {"entregada", "corregida"})
+
+
+def apply_credit_form(balance: int, pending: int, actors: list[dict], parent=None) -> FormDialog:
     return FormDialog(
         "Aplicar saldo a favor",
         f"Saldo a favor disponible: {format_cop(balance)} · Saldo pendiente de la venta: {format_cop(pending)}.",
         [("amount", "Importe a aplicar (COP) *", "text", str(min(balance, pending))),
-         ("reason", "Motivo *", "text"), ("by", "Registrado por *", "text")], parent)
+         ("reason", "Motivo *", "text"), ("by", "Registrado por *", "combo", actor_options(actors))], parent)
