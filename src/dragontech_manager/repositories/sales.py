@@ -37,6 +37,9 @@ class SalesRepository:
             """SELECT v.*, c.nombre AS cliente_nombre, b.importe_acordado_cop,
                       b.devuelto_reconocido_cop, b.importe_neto_cop,
                       b.pagado_neto_cop, b.saldo_pendiente_cop, b.sobrepago_pendiente_cop,
+                      b.saldo_favor_aplicado_cop, b.reembolsos_comprometidos_cop,
+                      b.reembolsos_entregados_cop, b.reembolso_por_entregar_cop,
+                      b.credito_generado_cop, b.exceso_reembolsado_cop,
                       b.unidades_vendidas, b.unidades_devueltas, b.estado_devolucion,
                       b.estado_cobro
                FROM ventas v JOIN clientes c ON c.id = v.cliente_id

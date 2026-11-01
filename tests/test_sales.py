@@ -39,7 +39,7 @@ class SalesServiceTests(unittest.TestCase):
                 "unit_price_cop": price, "product_id": self.product["id"]}
 
     def test_migration_seven_adds_idempotency_and_conversion_constraints(self) -> None:
-        self.assertEqual(self.version, 11)
+        self.assertEqual(self.version, 12)
         sale_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(ventas)")}
         line_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(venta_detalles)")}
         payment_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(pagos_clientes)")}
@@ -69,7 +69,7 @@ class SalesServiceTests(unittest.TestCase):
                     "INSERT INTO pagos_clientes (venta_id, importe_cop, tipo, metodo, registrado_en_utc) VALUES (1, 1000, 'recibo', 'Efectivo', '2026-10-24T12:00:00Z')"
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, migrations), 11)
+                self.assertEqual(migrate(connection, migrations), 12)
                 self.assertEqual(connection.execute("SELECT codigo FROM ventas WHERE id=1").fetchone()[0], "LEGACY-SALE")
                 self.assertEqual(connection.execute("SELECT saldo_pendiente_cop FROM v_saldos_ventas WHERE venta_id=1").fetchone()[0], 8000)
 

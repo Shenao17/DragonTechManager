@@ -12,9 +12,12 @@ from PySide6.QtWidgets import (
 
 from dragontech_manager.services.errors import ServiceError
 from dragontech_manager.services.idempotency import IntentKey
+from dragontech_manager.services.compensations import CompensationService
+from dragontech_manager.services.credit import CreditService
 from dragontech_manager.services.returns import ReturnsService
 from .pages import format_cop, format_local_datetime
 from .widgets import EmptyState, build_table, set_cell
+from .compensations import CompensationsDialog, _pesos, apply_credit_form, compensation_form
 from .product_defaults import ProductFieldBinding
 from .proposals import ProposalPage
 from .returns import PaymentReversalDialog, ReturnDialog
@@ -293,7 +296,11 @@ class SaleDetailsDialog(QDialog):
         self.sale_id = sale_id
         self.changed = False
         self.returns_service = ReturnsService(service.connection)
+        self.compensation_service = CompensationService(service.connection)
+        self.credit_service = CreditService(service.connection)
         self._return_intent = IntentKey()
+        self._compensate_intent = IntentKey()
+        self._credit_intent = IntentKey()
         self.setMinimumSize(820, 620)
         self.resize(1100, 820)
         self.outer = QVBoxLayout(self)
@@ -322,6 +329,11 @@ class SaleDetailsDialog(QDialog):
             + (f"\nDevuelto reconocido: {format_cop(self.sale['devuelto_reconocido_cop'])} · "
                f"Pagado en exceso pendiente de compensar: {format_cop(self.sale['sobrepago_pendiente_cop'])}"
                if self.sale["estado_devolucion"] != "ninguna" else "")
+            + (f"\nReembolso por entregar: {format_cop(self.sale['reembolso_por_entregar_cop'])} · "
+               f"Crédito generado: {format_cop(self.sale['credito_generado_cop'])} · "
+               f"Saldo a favor aplicado: {format_cop(self.sale['saldo_favor_aplicado_cop'])}"
+               if (self.sale["reembolsos_comprometidos_cop"] or self.sale["credito_generado_cop"]
+                   or self.sale["saldo_favor_aplicado_cop"]) else "")
         ))
         lines = build_table(["Concepto", "Cantidad", "Precio unitario", "Subtotal", "SKU"],
                             column_widths=[410, 100, 180, 180, 130], flexible_column=0)
@@ -345,6 +357,16 @@ class SaleDetailsDialog(QDialog):
         self.return_button.setEnabled(self.sale["estado_devolucion"] != "total")
         self.return_button.clicked.connect(self._return)
         controls.addWidget(self.return_button)
+        self.compensate_button = QPushButton("Compensar devolución")
+        self.compensate_button.setEnabled(self.sale["sobrepago_pendiente_cop"] > 0)
+        self.compensate_button.clicked.connect(self._compensate)
+        self.compensations_button = QPushButton("Reembolsos y crédito")
+        self.compensations_button.clicked.connect(self._open_compensations)
+        self.apply_credit_button = QPushButton("Aplicar saldo a favor")
+        self.apply_credit_button.setEnabled(self.sale["saldo_pendiente_cop"] > 0)
+        self.apply_credit_button.clicked.connect(self._apply_credit)
+        for button in (self.compensate_button, self.compensations_button, self.apply_credit_button):
+            controls.addWidget(button)
         controls.addStretch(1)
         self.body_layout.addLayout(controls)
         self.payments = build_table(["Tipo", "Importe", "Medio", "Referencia / motivo", "Registrado (UTC)"],
@@ -431,6 +453,68 @@ class SaleDetailsDialog(QDialog):
             self._render()
         except (ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo revertir el pago", str(error))
+
+    def _compensate(self) -> None:
+        methods = self.compensation_service.methods.list_methods("cliente")
+        dialog = compensation_form(self.sale, methods, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            v = dialog.values()
+            refund, credit = _pesos(v["refund"], "El reembolso"), _pesos(v["credit"], "El saldo a favor")
+            key = self._compensate_intent.for_payload({"venta": self.sale_id, **v})
+            answer = QMessageBox.question(
+                self, "Confirmar compensación",
+                f"Reembolso: {format_cop(refund)} · Saldo a favor: {format_cop(credit)}\n"
+                "El reembolso queda comprometido; la entrega del dinero se confirma después. ¿Continuar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.compensate_button.setEnabled(False)
+            self.compensation_service.commit(
+                self.sale_id, refund_cop=refund, credit_cop=credit, method=v["method"], reason=v["reason"],
+                executor=v["executor"], authorizer=v["authorizer"], authorization_ref=v["authorization_ref"],
+                customer_consent=v["consent"], idempotency_key=key)
+            self._compensate_intent.complete()
+            self.changed = True
+        except (ValueError, ServiceError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "No se pudo registrar la compensación", str(error))
+        finally:
+            self._render()
+
+    def _open_compensations(self) -> None:
+        dialog = CompensationsDialog(self.compensation_service, self.sale_id, self)
+        dialog.exec()
+        if dialog.changed:
+            self.changed = True
+        self._render()
+
+    def _apply_credit(self) -> None:
+        try:
+            balance = self.credit_service.balance(self.sale["cliente_id"])["saldo_disponible_cop"]
+        except ServiceError as error:
+            QMessageBox.warning(self, "No se pudo consultar el saldo a favor", str(error))
+            return
+        if balance <= 0:
+            QMessageBox.information(self, "Sin saldo a favor", "El cliente no tiene saldo a favor disponible.")
+            return
+        dialog = apply_credit_form(balance, self.sale["saldo_pendiente_cop"], self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            v = dialog.values()
+            amount = _pesos(v["amount"], "El importe")
+            key = self._credit_intent.for_payload({"venta": self.sale_id, **v})
+            self.apply_credit_button.setEnabled(False)
+            self.credit_service.apply_to_sale(self.sale_id, amount, reason=v["reason"],
+                                              registered_by=v["by"], idempotency_key=key)
+            self._credit_intent.complete()
+            self.changed = True
+        except (ValueError, ServiceError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "No se pudo aplicar el saldo a favor", str(error))
+        finally:
+            self._render()
 
     def _return(self) -> None:
         dialog = ReturnDialog(self.sale, self.returns_service.returnable_lines(self.sale_id), self)

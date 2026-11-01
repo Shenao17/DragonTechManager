@@ -28,3 +28,8 @@
 
 ## 2026-10-31 — Corrección: datos obsoletos al seleccionar productos
 - Nuevo `ui/product_defaults.py`; `SaleLineDialog` y `PurchaseLineDialog` lo usan. Sin cambios de servicios, migraciones ni reglas financieras. Pruebas: `tests/test_product_selection_ui.py`; suite completa 193 OK.
+
+## 2026-10-31 — Fase 1 · Entrega 5 (0012)
+- Migración `0012_credit_ledger_and_compensations`: `tipos_origen_saldo_favor`, `compensaciones_cancelacion`, `eventos_compensacion`, `movimientos_saldo_favor` (todas append-only, claves únicas, huellas); vistas `v_compensaciones_estado`, `v_ventas_posicion`, `v_saldos_ventas` (recreada: añade crédito aplicado, reembolsos comprometidos/entregados, crédito generado, exceso reembolsado), `v_saldos_favor`, `v_compensaciones_pendientes`; triggers R2/R3/regla de oro/R8, generación única de crédito, saldo ≥ 0, R4 con crédito, validación de eventos de entrega, R6 para correcciones de registro.
+- Nuevo `services/compensations.py`, `services/credit.py`, `repositories/compensations.py`, `ui/compensations.py`; `SaleDetailsDialog` con tres acciones nuevas.
+- Pruebas: `tests/test_compensations.py` (19, incl. concurrencia), `tests/test_compensations_ui.py`; versión de esquema esperada 12.

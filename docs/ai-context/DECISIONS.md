@@ -16,5 +16,10 @@
 - Autorización de valor reconocido menor: autorizador + referencia obligatorios y distintos del ejecutor (Informe2 §4.3); resto de reglas declarativas.
 - Numeración provisional: Entrega 5 → 0012, Entrega 6 → 0013, parte B del 0011 → 0014; se recrean vistas/triggers con DROP/CREATE, nunca se edita una migración aplicada.
 
+- Entrega 5 incluye la confirmación de entrega de reembolsos (eventos_compensacion) por indicación expresa; en el roadmap queda fuera de la Entrega 6. `actores`, extinciones de deuda, recuperaciones `H` y anulación automática tras reversión real siguen en la 6.
+- Compensación mixta = dos compromisos (reembolso + crédito) creados atómicamente con claves derivadas `<clave>:r`/`:c` y la misma huella de la solicitud.
+- Ledger con importes con signo: generación > 0, utilización < 0; saldo = suma. Crédito nace por trigger en la misma transacción (clave derivada determinista `compensacion:<id>:generacion`).
+- Voucher determinista `RC-AAAA-<id>`: reintentar o reimprimir devuelve el mismo.
+
 ## Propuestas/pendientes
 Ver `KNOWN_ISSUES.md` (P1–P11 en Informe2 §12 e Informe3 §7).

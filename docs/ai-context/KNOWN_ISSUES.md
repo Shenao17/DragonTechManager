@@ -25,7 +25,7 @@
 - `v_saldos_ordenes` no incluye aún `saldo_favor_aplicado_cop` (requiere ledger de 0010).
 
 ## Notas Entrega 4
-- Un reembolso pendiente (`estado_cobro='reembolso_pendiente'`) no se puede saldar todavía: compensaciones y saldo a favor son la Entrega 5. Hoy solo se ve el sobrepago.
+- (Resuelto en Entrega 5) El reembolso pendiente se salda con compensaciones.
 - Cancelación comercial sin devolución (servicio prestado, deuda por valor retenido) y extinción de deuda (condonación/castigo) no existen aún (Entrega 6). Una devolución con `R<T` deja saldo pendiente cobrable como pago normal.
 - Reversión de pagos de venta: se exige naturaleza/origen/evidencia, pero sin `actores` ni autorizador (declarativo hasta Entrega 6). No hay aún bloqueo por operaciones posteriores dependientes del pago (no existen compensaciones); R6/R13 llegan con la 5/6. Pagos históricos conservan estos campos NULL.
 - La devolución de ventas ligadas a `armado_pc_id` (I8/P6) no tiene tratamiento especial: no hay flujo de venta de armados.
@@ -38,3 +38,13 @@
 - **Corrección:** `ui/product_defaults.py` (`ProductFieldBinding`): cambiar de producto restablece siempre descripción y precio/costo al valor del nuevo producto (limpia si se elige «no inventariable»); lo editado después es manual y se respeta; `sync_for_save` reaplica los valores si la selección no coincide con el producto cuyos valores se aplicaron. Editar una línea existente conserva sus valores históricos.
 - **No reproducible / no afectados:** cotizaciones (`ProposalLineDialog` no tiene selector de producto; conserva `product_id` de la línea al editar su texto, por diseño histórico) y ajustes/movimientos de inventario (el producto es fijo y se recarga con `get_product` en cada apertura). No hay validación de servicio que compare descripción/precio con el producto: la descripción es histórica y editable por diseño.
 - Pruebas de regresión: `tests/test_product_selection_ui.py` (11). 8 fallaban antes de la corrección.
+
+## Notas Entrega 5
+- Identidad: ejecutor, autorizador y quien registra son texto declarativo (se valida solo que autorizador ≠ ejecutor/registrante); la tabla `actores` llega en la Entrega 6.
+- Reversión financiera real de un pago con reembolsos ya entregados (`exceso_reembolsado_cop > 0`): se registra siempre y bloquea nuevas entregas y compensaciones, pero **no** anula automáticamente los compromisos pendientes ni reconoce/cobra la deuda (N0, F, H): Entrega 6. El operador puede anular el compromiso manualmente con autorizador.
+- La corrección de registro erróneo se rechaza si deja `C > P` o `C + G > D` (R6); el bloqueo por crédito ya usado o deuda condonada llega con la 6.
+- Eventos `corregida` existen en la tabla pero no hay servicio/UI; los `ajuste` del ledger están bloqueados por trigger. Uso de saldo a favor en órdenes: no habilitado (Fase 2).
+- Regla de oro estricta: no se crea un reembolso nuevo mientras otro de la misma venta esté `preparada` o `en_investigacion` (sin excepción autorizada todavía).
+- `compensaciones_cancelacion.cancelacion_id` es opcional: la compensación se calcula a nivel de venta (R2/R3 usan toda la posición), no por devolución individual.
+- Vouchers deterministas `RC-AAAA-######`; la reimpresión física no existe aún (no hay impresión).
+- No hay panel automático de «entregas pendientes de confirmar» al iniciar: se consulta con `v_compensaciones_pendientes` / `CompensationService.pending_deliveries()` y el diálogo «Reembolsos y crédito» de cada venta.

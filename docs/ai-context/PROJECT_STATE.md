@@ -13,12 +13,13 @@ Actualizado: 2026-10-31. Rama `main`, sin commits nuevos de Fase 1 (cambios sin 
 - Fase 1 · Entrega 3 (migración `0011`, parte A): `v_ordenes_importes` es la única definición del importe acordado de órdenes; `v_saldos_ordenes`, `ServiceOrderRepository.list_orders` y los triggers `pagos_clientes_no_sobrepagar_orden`, `orden_no_reducir_deuda_pagada`, `decisiones_adicional_no_reduce_deuda_pagada` la consumen (mismas reglas y mensajes). Resuelve I10.
 - Fase 1 · Entrega 4 (migración `0010`): `cancelaciones_venta` + `cancelacion_venta_lineas` (append-only, idempotentes), `ReturnsService`, `ui/returns.py` (botón «Registrar devolución» en el detalle de venta). Reintegra a stock solo lo apto (movimiento `ajuste` con `devolucion_venta_linea_id`), `v_devoluciones_no_reintegradas`, `v_saldos_ventas` con `devuelto_reconocido_cop`, `sobrepago_pendiente_cop`, `estado_devolucion`, `estado_cobro` (`reembolso_pendiente`). Reversión de pagos de venta clasificada (`naturaleza_reversion`, `origen_evento`, `evidencia_reversion`).
 - Corrección de selección de productos en líneas de venta y compra (ver KNOWN_ISSUES). Falta validación visual.
+- Fase 1 · Entrega 5 (migración `0012`): `CompensationService` (commit reembolso/crédito/mixta, prepare, confirm_delivery, annul, mark_under_investigation), `CreditService` (balance, apply_to_sale), `ui/compensations.py` + botones en el detalle de venta («Compensar devolución», «Reembolsos y crédito», «Aplicar saldo a favor»). `v_ventas_posicion` es la fuente única de `P, U, T, R, C, C_e, G, D`.
 
-**Aprobado y pendiente**: Entregas 5–6b (ver roadmap: saldo a favor y compensaciones, actores/reembolsos físicos/extinción de deuda, parte B del 0011 ( Informe2 §9, Informe3 §4.7) y lo no cubierto del 0009 original (ver roadmap, fila 2b).
+**Aprobado y pendiente**: Entregas 6–6b (ver roadmap: actores, extinción de deuda y reversión real; parte B del 0011, que depende de 0012–0013 ( Informe2 §9, Informe3 §4.7) y lo no cubierto del 0009 original (ver roadmap, fila 2b).
 **Sin flujo**: armados de PC, gastos, informes, devoluciones/cancelaciones, saldo a favor.
 
 ## Esquema
-Versión 11. Migraciones 0001–0011 (la 0010 se aplicó después de la 0011 en bases ya migradas) en `src/dragontech_manager/database/migrations/`.
+Versión 12. Migraciones 0001–0012 (la 0010 se aplicó después de la 0011 en bases ya migradas) en `src/dragontech_manager/database/migrations/`.
 
 ## Documentos fuente
 `docs/Informe2 - Diseño Fase 1 (Revisión).md`, `docs/Informe3 - Cierre de decisiones Fase 1.md`, `docs/Nota de corrección - Reversión externa Informe3.md` (originales aprobados; no modificar). Técnicos: `docs/architecture.md`, `data-model.md`, `backups.md`, `fase-0.md`.
