@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from dragontech_manager.services.idempotency import IntentKey
 from dragontech_manager.services.errors import ServiceError
 from dragontech_manager.services.inventory import InventoryService
 from .pages import format_cop
@@ -212,6 +213,8 @@ class ProductDetailDialog(QDialog):
         history_controls.addWidget(self.history_next)
         outer.addLayout(history_controls)
         outer.addLayout(actions)
+        self._adjust_intent = IntentKey()
+        self._reverse_intent = IntentKey()
         self.adjust_button.clicked.connect(self._adjust)
         self.reverse_button.clicked.connect(self._reverse)
         self.table.itemSelectionChanged.connect(self._sync_reverse)
@@ -278,12 +281,19 @@ class ProductDetailDialog(QDialog):
             return
         try:
             delta, cost, reason = dialog.values()
-            self.service.adjust_stock(self.product_id, delta, unit_cost_cop=cost, reason=reason)
+            key = self._adjust_intent.for_payload(
+                {"producto": self.product_id, "delta": delta, "costo": cost, "motivo": reason})
+            self._set_busy(True)
+            self.service.adjust_stock(self.product_id, delta, unit_cost_cop=cost, reason=reason,
+                                      idempotency_key=key)
+            self._adjust_intent.complete()
             self.changed = True
             self.movement_offset = 0
             self._refresh()
         except (ValueError, ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo registrar el ajuste", str(error))
+        finally:
+            self._set_busy(False)
 
     def _selected_movement_id(self) -> int | None:
         row = self.table.currentRow()
@@ -307,12 +317,25 @@ class ProductDetailDialog(QDialog):
         if not accepted:
             return
         try:
-            self.service.reverse_movement(movement_id, reason=reason)
+            key = self._reverse_intent.for_payload({"movimiento": movement_id, "motivo": reason})
+            self._set_busy(True)
+            self.service.reverse_movement(movement_id, reason=reason, idempotency_key=key)
+            self._reverse_intent.complete()
             self.changed = True
             self.movement_offset = 0
             self._refresh()
         except (ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo revertir el movimiento", str(error))
+        finally:
+            self._set_busy(False)
+
+    def _set_busy(self, busy: bool) -> None:
+        """Evita doble envío mientras se procesa; al terminar reevalúa el estado."""
+        self.adjust_button.setEnabled(not busy)
+        if busy:
+            self.reverse_button.setEnabled(False)
+        else:
+            self._sync_reverse()
 
 
 class ProductPage(QWidget):

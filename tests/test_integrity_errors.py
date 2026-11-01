@@ -2,6 +2,7 @@
 
 import sqlite3
 import unittest
+from uuid import uuid4
 from contextlib import closing
 
 from dragontech_manager.database.connection import open_database
@@ -85,8 +86,7 @@ class IntegrityErrorTranslationTests(unittest.TestCase):
             inventory = InventoryService(connection)
             product = inventory.create_product(sku="INM-1", name="Producto inmutable")
             movement = inventory.adjust_stock(
-                product["id"], 1, unit_cost_cop=1000, reason="Conteo"
-            )
+                product["id"], 1, unit_cost_cop=1000, reason="Conteo", idempotency_key=uuid4().hex)
             with self.assertRaises(sqlite3.IntegrityError) as captured:
                 connection.execute(
                     "DELETE FROM movimientos_inventario WHERE id = ?", (movement["id"],)

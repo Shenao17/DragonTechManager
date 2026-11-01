@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from uuid import uuid4
 from pathlib import Path
 
 from dragontech_manager.database.connection import open_database
@@ -32,7 +33,7 @@ class InventoryProcurementTests(unittest.TestCase):
         )
 
     def test_migration_six_adds_fields_and_guards_stock(self) -> None:
-        self.assertEqual(self.version, 8)
+        self.assertEqual(self.version, 9)
         product_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(productos)")}
         supplier_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(proveedores)")}
         detail_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(compra_detalles)")}
@@ -91,7 +92,7 @@ class InventoryProcurementTests(unittest.TestCase):
                     "INSERT INTO compra_detalles (compra_id, producto_id, cantidad, costo_unitario_historico_cop) VALUES (1, 1, 2, 8000)"
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, migrations), 8)
+                self.assertEqual(migrate(connection, migrations), 9)
                 self.assertEqual(connection.execute("SELECT nombre FROM productos WHERE id=1").fetchone()[0], "Producto anterior")
                 self.assertEqual(connection.execute("SELECT cantidad FROM compra_detalles WHERE id=1").fetchone()[0], 2)
                 self.assertEqual(connection.execute("SELECT descripcion_historica FROM compra_detalles WHERE id=1").fetchone()[0], "")
@@ -132,34 +133,30 @@ class InventoryProcurementTests(unittest.TestCase):
 
     def test_adjustments_prevent_negative_stock_and_reversals_are_traceable_once(self) -> None:
         movement = self.inventory.adjust_stock(
-            self.product["id"], 7, unit_cost_cop=95_000, reason="Conteo inicial documentado"
-        )
+            self.product["id"], 7, unit_cost_cop=95_000, reason="Conteo inicial documentado", idempotency_key=uuid4().hex)
         self.assertEqual(self.inventory.get_product(self.product["id"])["existencia"], 7)
         out = self.inventory.adjust_stock(
-            self.product["id"], -2, unit_cost_cop=95_000, reason="Daño registrado"
-        )
+            self.product["id"], -2, unit_cost_cop=95_000, reason="Daño registrado", idempotency_key=uuid4().hex)
         self.assertEqual(self.inventory.get_product(self.product["id"])["existencia"], 5)
         with self.assertRaises(ConflictError):
-            self.inventory.adjust_stock(self.product["id"], -6, unit_cost_cop=0, reason="No debe bajar de cero")
+            self.inventory.adjust_stock(self.product["id"], -6, unit_cost_cop=0, reason="No debe bajar de cero", idempotency_key=uuid4().hex)
         with self.assertRaises(ConflictError):
-            self.inventory.reverse_movement(movement["id"], reason="Stock ya consumido")
-        reversal = self.inventory.reverse_movement(out["id"], reason="Corrección de la salida")
+            self.inventory.reverse_movement(movement["id"], reason="Stock ya consumido", idempotency_key=uuid4().hex)
+        reversal = self.inventory.reverse_movement(out["id"], reason="Corrección de la salida", idempotency_key=uuid4().hex)
         self.assertEqual(reversal["cantidad_delta"], 2)
         self.assertEqual(self.inventory.get_product(self.product["id"])["existencia"], 7)
 
     def test_adjustment_reversal_that_would_make_stock_negative_is_rejected(self) -> None:
         movement = self.inventory.adjust_stock(
-            self.product["id"], 4, unit_cost_cop=10_000, reason="Conteo positivo"
-        )
+            self.product["id"], 4, unit_cost_cop=10_000, reason="Conteo positivo", idempotency_key=uuid4().hex)
         self.inventory.adjust_stock(
-            self.product["id"], -3, unit_cost_cop=10_000, reason="Salida respaldada"
-        )
+            self.product["id"], -3, unit_cost_cop=10_000, reason="Salida respaldada", idempotency_key=uuid4().hex)
         with self.assertRaises(ConflictError):
-            self.inventory.reverse_movement(movement["id"], reason="El stock ya fue consumido")
+            self.inventory.reverse_movement(movement["id"], reason="El stock ya fue consumido", idempotency_key=uuid4().hex)
         self.assertEqual(self.inventory.get_product(self.product["id"])["existencia"], 1)
 
     def test_adjustments_cannot_consume_units_reserved_for_a_service_order(self) -> None:
-        self.inventory.adjust_stock(self.product["id"], 5, unit_cost_cop=100_000, reason="Entrada inicial")
+        self.inventory.adjust_stock(self.product["id"], 5, unit_cost_cop=100_000, reason="Entrada inicial", idempotency_key=uuid4().hex)
         utc = "2026-10-24T15:30:00Z"
         self.connection.execute(
             "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES ('Cliente interno', ?, ?)",
@@ -189,7 +186,7 @@ class InventoryProcurementTests(unittest.TestCase):
         self.connection.commit()
         with self.assertRaises(ConflictError):
             self.inventory.adjust_stock(self.product["id"], -2, unit_cost_cop=100_000,
-                                        reason="No puede consumir lo reservado")
+                                        reason="No puede consumir lo reservado", idempotency_key=uuid4().hex)
         with self.assertRaises(sqlite3.IntegrityError):
             self.connection.execute(
                 """INSERT INTO movimientos_inventario
@@ -257,20 +254,20 @@ class InventoryProcurementTests(unittest.TestCase):
     def test_partial_full_and_reversed_supplier_payments_derive_balance(self) -> None:
         purchase = self.procurement.create_purchase(self.supplier["id"], [self.line(quantity=2, cost=50_000)])
         with self.assertRaises(ConflictError):
-            self.procurement.register_supplier_payment(purchase["id"], 1, method="Efectivo")
+            self.procurement.register_supplier_payment(purchase["id"], 1, method="Efectivo", idempotency_key=uuid4().hex)
         self.procurement.transition_purchase(purchase["id"], "pendiente")
-        first = self.procurement.register_supplier_payment(purchase["id"], 40_000, method="Transferencia")
+        first = self.procurement.register_supplier_payment(purchase["id"], 40_000, method="Transferencia", idempotency_key=uuid4().hex)
         current = self.procurement.get_purchase(purchase["id"])
         self.assertEqual((current["importe_compra_cop"], current["pagado_neto_cop"], current["saldo_pendiente_cop"]),
                          (100_000, 40_000, 60_000))
         with self.assertRaises(ValidationError):
-            self.procurement.register_supplier_payment(purchase["id"], 60_001, method="Efectivo")
-        second = self.procurement.register_supplier_payment(purchase["id"], 60_000, method="Efectivo")
+            self.procurement.register_supplier_payment(purchase["id"], 60_001, method="Efectivo", idempotency_key=uuid4().hex)
+        second = self.procurement.register_supplier_payment(purchase["id"], 60_000, method="Efectivo", idempotency_key=uuid4().hex)
         self.assertEqual(self.procurement.get_purchase(purchase["id"])["saldo_pendiente_cop"], 0)
-        self.procurement.reverse_supplier_payment(first["id"], reason="Reversión de prueba")
+        self.procurement.reverse_supplier_payment(first["id"], reason="Reversión de prueba", idempotency_key=uuid4().hex)
         self.assertEqual(self.procurement.get_purchase(purchase["id"])["saldo_pendiente_cop"], 40_000)
         with self.assertRaises(ConflictError):
-            self.procurement.reverse_supplier_payment(first["id"], reason="Duplicada")
+            self.procurement.reverse_supplier_payment(first["id"], reason="Duplicada", idempotency_key=uuid4().hex)
         self.assertTrue(self.procurement.can_reverse_supplier_payment(second["id"]))
 
     def test_receipt_failure_rolls_back_state_and_all_stock_movements(self) -> None:
@@ -295,7 +292,7 @@ class InventoryProcurementTests(unittest.TestCase):
     def test_supplier_history_and_cancel_rules(self) -> None:
         purchase = self.procurement.create_purchase(self.supplier["id"], [self.line()])
         self.procurement.transition_purchase(purchase["id"], "pendiente")
-        self.procurement.register_supplier_payment(purchase["id"], 20_000, method="Efectivo")
+        self.procurement.register_supplier_payment(purchase["id"], 20_000, method="Efectivo", idempotency_key=uuid4().hex)
         with self.assertRaises(ConflictError):
             self.procurement.transition_purchase(purchase["id"], "cancelada")
         self.assertEqual(len(self.procurement.supplier_purchase_history(self.supplier["id"])), 1)

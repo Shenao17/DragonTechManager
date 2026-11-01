@@ -102,16 +102,18 @@ class InventoryRepository:
                      kind: str, created_utc: str, reason: str,
                      purchase_line_id: int | None = None,
                      sale_line_id: int | None = None,
-                     reverses_movement_id: int | None = None) -> dict:
+                     reverses_movement_id: int | None = None,
+                     idempotency_key: str | None = None,
+                     request_fingerprint: str | None = None) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
                 compra_detalle_id, venta_detalle_id, reversa_movimiento_id, creado_en_utc, motivo,
-                fecha_negocio)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+                fecha_negocio, clave_idempotencia, huella_solicitud)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (product_id, delta, cost_cop, kind, purchase_line_id,
              sale_line_id, reverses_movement_id, created_utc, reason,
-             business_date_from_utc(created_utc)),
+             business_date_from_utc(created_utc), idempotency_key, request_fingerprint),
         ).fetchone())
 
     def reserve_sale_line(self, *, product_id: int, sale_line_id: int,
@@ -121,6 +123,11 @@ class InventoryRepository:
                (producto_id, venta_detalle_id, cantidad, estado, creada_en_utc, actualizada_en_utc)
                VALUES (?, ?, ?, 'reservada', ?, ?) RETURNING *""",
             (product_id, sale_line_id, quantity, timestamp_utc, timestamp_utc),
+        ).fetchone())
+
+    def get_movement_by_key(self, key: str) -> dict | None:
+        return row_dict(self.connection.execute(
+            "SELECT * FROM movimientos_inventario WHERE clave_idempotencia = ?", (key,)
         ).fetchone())
 
     def get_movement(self, movement_id: int) -> dict | None:

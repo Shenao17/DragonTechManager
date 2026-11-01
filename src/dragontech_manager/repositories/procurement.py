@@ -74,14 +74,20 @@ class ProcurementRepository:
 
     def add_supplier_payment(self, *, purchase_id: int, amount_cop: int, method: str,
                              method_id: int, reference: str, timestamp_utc: str,
-                             business_date: str) -> dict:
+                             business_date: str, idempotency_key: str,
+                             request_fingerprint: str) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_proveedores
                (compra_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
-                registrado_en_utc, fecha_negocio)
-               VALUES (?, ?, 'pago', ?, ?, ?, ?, ?) RETURNING *""",
+                registrado_en_utc, fecha_negocio, clave_idempotencia, huella_solicitud)
+               VALUES (?, ?, 'pago', ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (purchase_id, amount_cop, method, method_id, reference, timestamp_utc,
-             business_date),
+             business_date, idempotency_key, request_fingerprint),
+        ).fetchone())
+
+    def get_supplier_payment_by_key(self, key: str) -> dict | None:
+        return row_dict(self.connection.execute(
+            "SELECT * FROM pagos_proveedores WHERE clave_idempotencia = ?", (key,)
         ).fetchone())
 
     def get_supplier_payment(self, payment_id: int) -> dict | None:
@@ -95,15 +101,17 @@ class ProcurementRepository:
         ).fetchone() is not None
 
     def reverse_supplier_payment(self, original: dict, *, reason: str, timestamp_utc: str,
-                                 business_date: str) -> dict:
+                                 business_date: str, idempotency_key: str,
+                                 request_fingerprint: str) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_proveedores
                (compra_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
-                registrado_en_utc, fecha_negocio, reversa_pago_id, motivo)
-               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+                registrado_en_utc, fecha_negocio, reversa_pago_id, motivo,
+                clave_idempotencia, huella_solicitud)
+               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (original["compra_id"], original["importe_cop"], original["metodo"],
              original["metodo_pago_id"], original["referencia"], timestamp_utc,
-             business_date, original["id"], reason),
+             business_date, original["id"], reason, idempotency_key, request_fingerprint),
         ).fetchone())
 
     def list_supplier_payments(self, purchase_id: int) -> list[dict]:

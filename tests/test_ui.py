@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from uuid import uuid4
 from unittest.mock import patch
 
 # El runner puede definir DISPLAY aunque no haya un servidor accesible. Estas
@@ -139,7 +140,7 @@ class DesktopUiTests(unittest.TestCase):
         inventory = InventoryService(self.connection)
         product = inventory.create_product(sku="UI-SKU", name="Producto UI",
                                            unit_cost_cop=10_000, suggested_price_cop=25_000)
-        inventory.adjust_stock(product["id"], 2, unit_cost_cop=10_000, reason="Ingreso de prueba UI")
+        inventory.adjust_stock(product["id"], 2, unit_cost_cop=10_000, reason="Ingreso de prueba UI", idempotency_key=uuid4().hex)
         window = create_main_window(self.connection, database_path=":memory:",
                                     schema_version=self.schema_version)
         self.addCleanup(window.close)
@@ -179,7 +180,7 @@ class DesktopUiTests(unittest.TestCase):
         inventory = InventoryService(self.connection)
         product = inventory.create_product(sku="QUOTE-UI", name="Artículo acordado",
                                            unit_cost_cop=12_000, suggested_price_cop=20_000)
-        inventory.adjust_stock(product["id"], 1, unit_cost_cop=12_000, reason="Ingreso de prueba UI")
+        inventory.adjust_stock(product["id"], 1, unit_cost_cop=12_000, reason="Ingreso de prueba UI", idempotency_key=uuid4().hex)
         proposals = ProposalService(self.connection)
         proposal = proposals.create_proposal(customer["id"], [{
             "description": "Artículo acordado", "quantity": 1, "unit_price_cop": 20_000,
@@ -337,7 +338,7 @@ class DesktopUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "profile" / "dragontech.sqlite3"
             connection, version = initialize_database(database_path)
-            self.assertEqual(version, 8)
+            self.assertEqual(version, 9)
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             connection.execute(
                 "INSERT INTO clientes (nombre, creado_en_utc, actualizado_en_utc) VALUES ('Registro de prueba', '2026-10-24T15:30:00Z', '2026-10-24T15:30:00Z')"
@@ -347,7 +348,7 @@ class DesktopUiTests(unittest.TestCase):
 
             reopened, reopened_version = initialize_database(database_path)
             try:
-                self.assertEqual(reopened_version, 8)
+                self.assertEqual(reopened_version, 9)
                 self.assertEqual(reopened.execute("SELECT nombre FROM clientes").fetchone()[0], "Registro de prueba")
                 self.assertEqual(reopened.execute("SELECT COUNT(*) FROM clientes").fetchone()[0], 1)
             finally:

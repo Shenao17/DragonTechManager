@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from uuid import uuid4
 from pathlib import Path
 
 from dragontech_manager.database.connection import open_database
@@ -31,14 +32,14 @@ class SalesServiceTests(unittest.TestCase):
             suggested_price_cop=35_000,
         )
         self.inventory.adjust_stock(self.product["id"], 5, unit_cost_cop=20_000,
-                                     reason="Existencia inicial de prueba")
+                                     reason="Existencia inicial de prueba", idempotency_key=uuid4().hex)
 
     def inventory_line(self, quantity=1, price=35_000):
         return {"description": "Mouse histórico", "quantity": quantity,
                 "unit_price_cop": price, "product_id": self.product["id"]}
 
     def test_migration_seven_adds_idempotency_and_conversion_constraints(self) -> None:
-        self.assertEqual(self.version, 8)
+        self.assertEqual(self.version, 9)
         sale_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(ventas)")}
         line_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(venta_detalles)")}
         payment_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(pagos_clientes)")}
@@ -68,7 +69,7 @@ class SalesServiceTests(unittest.TestCase):
                     "INSERT INTO pagos_clientes (venta_id, importe_cop, tipo, metodo, registrado_en_utc) VALUES (1, 1000, 'recibo', 'Efectivo', '2026-10-24T12:00:00Z')"
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, migrations), 8)
+                self.assertEqual(migrate(connection, migrations), 9)
                 self.assertEqual(connection.execute("SELECT codigo FROM ventas WHERE id=1").fetchone()[0], "LEGACY-SALE")
                 self.assertEqual(connection.execute("SELECT saldo_pendiente_cop FROM v_saldos_ventas WHERE venta_id=1").fetchone()[0], 8000)
 

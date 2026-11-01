@@ -1,8 +1,6 @@
 """Casos de uso transaccionales de ventas y cuentas por cobrar."""
 
 from datetime import date, datetime, timezone
-import hashlib
-import json
 import sqlite3
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -14,15 +12,11 @@ from dragontech_manager.repositories.sales import SalesRepository
 from dragontech_manager.business_date import business_date_from_utc
 from .payment_methods import PaymentMethodService
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
+from .idempotency import fingerprint as _fingerprint
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
 _MAX = 9_223_372_036_854_775_807
 _BOGOTA = ZoneInfo("America/Bogota")
-
-
-def _fingerprint(payload: dict) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
 
 
 class SalesService:

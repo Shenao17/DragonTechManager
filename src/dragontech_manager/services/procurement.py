@@ -10,6 +10,7 @@ from dragontech_manager.repositories.procurement import ProcurementRepository
 from dragontech_manager.business_date import business_date_from_utc
 from .payment_methods import PaymentMethodService
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
+from . import idempotency
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
 _BOGOTA = ZoneInfo("America/Bogota")
@@ -196,16 +197,24 @@ class ProcurementService:
             raise translate_integrity_error(error) from error
 
     def register_supplier_payment(self, purchase_id: int, amount_cop: int, *,
-                                  method: str | int, reference: str = "") -> dict:
+                                  method: str | int, idempotency_key: str,
+                                  reference: str = "") -> dict:
         purchase_id = positive_id(purchase_id, "La compra")
         amount_cop = nonnegative_cop(amount_cop, "El pago")
         if amount_cop <= 0:
             raise ValidationError("El pago debe ser mayor que cero.")
         method_row = self.methods.resolve(method, "proveedor")
         reference_value = optional_text(reference, "La referencia", none_as_empty=True)
+        key = idempotency.validate_key(idempotency_key)
+        request_fp = idempotency.fingerprint({
+            "op": "pago_proveedor", "compra_id": purchase_id, "importe_cop": amount_cop,
+            "metodo_pago_id": method_row["id"], "referencia": reference_value})
         timestamp, _ = timestamp_and_business_year()
         try:
             with atomic(self.connection):
+                prior = self.repository.get_supplier_payment_by_key(key)
+                if idempotency.is_replay(prior, request_fp):
+                    return prior
                 purchase = self.repository.get_purchase(purchase_id)
                 if purchase is None:
                     raise NotFoundError("No se encontró la compra a la que se quiere asociar el pago.")
@@ -218,16 +227,24 @@ class ProcurementService:
                     method=method_row["nombre"], method_id=method_row["id"],
                     reference=reference_value, timestamp_utc=timestamp,
                     business_date=business_date_from_utc(timestamp),
+                    idempotency_key=key, request_fingerprint=request_fp,
                 )
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
 
-    def reverse_supplier_payment(self, payment_id: int, *, reason: str) -> dict:
+    def reverse_supplier_payment(self, payment_id: int, *, reason: str,
+                                 idempotency_key: str) -> dict:
         payment_id = positive_id(payment_id, "El pago")
         reason_value = required_text(reason, "El motivo de reversión")
+        key = idempotency.validate_key(idempotency_key)
+        request_fp = idempotency.fingerprint({
+            "op": "reversion_pago_proveedor", "pago_id": payment_id, "motivo": reason_value})
         timestamp, _ = timestamp_and_business_year()
         try:
             with atomic(self.connection):
+                prior = self.repository.get_supplier_payment_by_key(key)
+                if idempotency.is_replay(prior, request_fp):
+                    return prior
                 original = self.repository.get_supplier_payment(payment_id)
                 if original is None:
                     raise NotFoundError("No se encontró el pago que se quiere revertir.")
@@ -238,6 +255,7 @@ class ProcurementService:
                 return self.repository.reverse_supplier_payment(
                     original, reason=reason_value, timestamp_utc=timestamp,
                     business_date=business_date_from_utc(timestamp),
+                    idempotency_key=key, request_fingerprint=request_fp,
                 )
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error

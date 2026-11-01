@@ -6,4 +6,5 @@
 - Triggers de inserción obligan `fecha_negocio`; todo INSERT directo (tests incluidos) debe suministrarla.
 - Operaciones multi-tabla en `atomic(connection)`; `sqlite3.IntegrityError` se traduce con `translate_integrity_error`.
 - Fecha de negocio: `dragontech_manager.business_date.business_date_from_utc`.
+- Idempotencia: `services/idempotency.py`; consultar la clave dentro de `atomic` (BEGIN IMMEDIATE) antes de validar estado; claves ≤120 caracteres; en UI usar `IntentKey` (una clave por intención, se descarta al éxito).
 - Python 3.14 + PySide6 en `.venv`; sin dependencias nuevas.

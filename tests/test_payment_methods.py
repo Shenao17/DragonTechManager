@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from uuid import uuid4
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -96,7 +97,7 @@ class PaymentMethodTests(unittest.TestCase):
                                            suggested_price_cop=200)
         with mock.patch("dragontech_manager.services.inventory.timestamp_and_business_year",
                         return_value=(NIGHT_UTC, 2026)):
-            inventory.adjust_stock(product["id"], 3, unit_cost_cop=100, reason="Conteo nocturno")
+            inventory.adjust_stock(product["id"], 3, unit_cost_cop=100, reason="Conteo nocturno", idempotency_key=uuid4().hex)
         row = self.connection.execute(
             "SELECT creado_en_utc, fecha_negocio FROM movimientos_inventario").fetchone()
         self.assertEqual((row[0], row[1]), (NIGHT_UTC, "2026-10-24"))
@@ -116,10 +117,10 @@ class PaymentMethodTests(unittest.TestCase):
             {"product_id": product["id"], "quantity": 1, "unit_cost_cop": 10_000,
             "description": "Compra"}])
         procurement.transition_purchase(purchase["id"], "pendiente")
-        payment = procurement.register_supplier_payment(purchase["id"], 4_000, method="csx")
+        payment = procurement.register_supplier_payment(purchase["id"], 4_000, method="csx", idempotency_key=uuid4().hex)
         self.assertEqual((payment["metodo"], payment["fecha_negocio"] is not None), ("CSX", True))
         with self.assertRaises(ValidationError):
-            procurement.register_supplier_payment(purchase["id"], 1_000, method="Desconocido")
+            procurement.register_supplier_payment(purchase["id"], 1_000, method="Desconocido", idempotency_key=uuid4().hex)
 
     def test_migration_keeps_legacy_rows_unmodified_and_views_resolve_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -139,7 +140,7 @@ class PaymentMethodTests(unittest.TestCase):
                     "INSERT INTO pagos_clientes (venta_id, importe_cop, tipo, metodo, registrado_en_utc) VALUES (1, 1000, 'recibo', 'Tarjeta', ?)",
                     (NIGHT_UTC,))
                 connection.commit()
-                self.assertEqual(migrate(connection, MIGRATIONS), 8)
+                self.assertEqual(migrate(connection, MIGRATIONS), 9)
                 raw = connection.execute("SELECT metodo_pago_id, fecha_negocio FROM pagos_clientes").fetchone()
                 self.assertEqual((raw[0], raw[1]), (None, None))
                 view = connection.execute(

@@ -1,6 +1,7 @@
 """El mecanismo genérico solo revierte ajustes; el resto exige su flujo."""
 
 import unittest
+from uuid import uuid4
 
 from dragontech_manager.database.connection import open_database
 from dragontech_manager.database.migrations import migrate
@@ -29,8 +30,7 @@ class InventoryReversalGuardTests(unittest.TestCase):
             unit_cost_cop=10_000, suggested_price_cop=20_000,
         )
         self.inventory.adjust_stock(
-            self.product["id"], 10, unit_cost_cop=10_000, reason="Existencia inicial"
-        )
+            self.product["id"], 10, unit_cost_cop=10_000, reason="Existencia inicial", idempotency_key=uuid4().hex)
 
     # ------------------------------------------------------------------ helpers
     def _movement(self, kind: str) -> dict:
@@ -63,14 +63,14 @@ class InventoryReversalGuardTests(unittest.TestCase):
         before_stock = self._stock()
         before_movements = self._movement_count()
         with self.assertRaises(ConflictError) as captured:
-            self.inventory.reverse_movement(movement_id, reason="Intento genérico")
+            self.inventory.reverse_movement(movement_id, reason="Intento genérico", idempotency_key=uuid4().hex)
         self.assertIn(flow, str(captured.exception))
         self.assertEqual(self._stock(), before_stock)
         self.assertEqual(self._movement_count(), before_movements)
         self.assertEqual(self._reversal_count(), 0)
         # Reintentar el mismo intento falla igual y no deja residuos.
         with self.assertRaises(ConflictError):
-            self.inventory.reverse_movement(movement_id, reason="Reintento")
+            self.inventory.reverse_movement(movement_id, reason="Reintento", idempotency_key=uuid4().hex)
         self.assertEqual(self._movement_count(), before_movements)
 
     def _sale_movement(self) -> tuple[dict, dict]:
@@ -169,15 +169,13 @@ class InventoryReversalGuardTests(unittest.TestCase):
 
     def test_manual_adjustments_remain_reversible(self) -> None:
         entry = self.inventory.adjust_stock(
-            self.product["id"], 4, unit_cost_cop=10_000, reason="Entrada manual"
-        )
+            self.product["id"], 4, unit_cost_cop=10_000, reason="Entrada manual", idempotency_key=uuid4().hex)
         out = self.inventory.adjust_stock(
-            self.product["id"], -1, unit_cost_cop=10_000, reason="Salida manual"
-        )
+            self.product["id"], -1, unit_cost_cop=10_000, reason="Salida manual", idempotency_key=uuid4().hex)
         self.assertEqual(self._stock(), 13)
         self.assertIsNone(self.inventory.reversal_blocked_reason(out["id"]))
         self.assertTrue(self.inventory.can_reverse_movement(out["id"]))
-        reversal = self.inventory.reverse_movement(out["id"], reason="Corrección manual")
+        reversal = self.inventory.reverse_movement(out["id"], reason="Corrección manual", idempotency_key=uuid4().hex)
         self.assertEqual(reversal["cantidad_delta"], 1)
         self.assertEqual(reversal["tipo"], "reversion")
         self.assertEqual(self._stock(), 14)
@@ -186,28 +184,26 @@ class InventoryReversalGuardTests(unittest.TestCase):
 
     def test_an_adjustment_cannot_be_reversed_twice(self) -> None:
         movement = self.inventory.adjust_stock(
-            self.product["id"], 2, unit_cost_cop=10_000, reason="Entrada manual"
-        )
-        self.inventory.reverse_movement(movement["id"], reason="Primera corrección")
+            self.product["id"], 2, unit_cost_cop=10_000, reason="Entrada manual", idempotency_key=uuid4().hex)
+        self.inventory.reverse_movement(movement["id"], reason="Primera corrección", idempotency_key=uuid4().hex)
         self.assertFalse(self.inventory.can_reverse_movement(movement["id"]))
         self.assertIn(
             "ya tiene una reversión",
             self.inventory.reversal_blocked_reason(movement["id"]),
         )
         with self.assertRaises(ConflictError):
-            self.inventory.reverse_movement(movement["id"], reason="Segunda corrección")
+            self.inventory.reverse_movement(movement["id"], reason="Segunda corrección", idempotency_key=uuid4().hex)
 
     def test_a_reversal_movement_cannot_be_reversed_again(self) -> None:
         movement = self.inventory.adjust_stock(
-            self.product["id"], 2, unit_cost_cop=10_000, reason="Entrada manual"
-        )
-        reversal = self.inventory.reverse_movement(movement["id"], reason="Corrección")
+            self.product["id"], 2, unit_cost_cop=10_000, reason="Entrada manual", idempotency_key=uuid4().hex)
+        reversal = self.inventory.reverse_movement(movement["id"], reason="Corrección", idempotency_key=uuid4().hex)
         self.assertIn(
             "no se puede revertir de nuevo",
             self.inventory.reversal_blocked_reason(reversal["id"]),
         )
         with self.assertRaises(ConflictError):
-            self.inventory.reverse_movement(reversal["id"], reason="Reintento")
+            self.inventory.reverse_movement(reversal["id"], reason="Reintento", idempotency_key=uuid4().hex)
 
     def test_missing_movement_is_reported(self) -> None:
         with self.assertRaises(NotFoundError):

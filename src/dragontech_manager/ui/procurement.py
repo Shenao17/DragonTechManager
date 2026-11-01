@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from dragontech_manager.services.idempotency import IntentKey
 from dragontech_manager.services.errors import ServiceError
 from .inventory import _integer_value
 from .pages import format_cop
@@ -553,6 +554,8 @@ class PurchaseDetailsDialog(QDialog):
         self.confirm_button.clicked.connect(lambda: self._transition("pendiente"))
         self.receive_button.clicked.connect(lambda: self._transition("recibida"))
         self.cancel_button.clicked.connect(lambda: self._transition("cancelada"))
+        self._payment_intent = IntentKey()
+        self._reverse_intent = IntentKey()
         self.payment_button.clicked.connect(self._payment)
         self.reverse_button.clicked.connect(self._reverse_payment)
         self.payments_table.itemSelectionChanged.connect(self._sync_reverse)
@@ -635,13 +638,21 @@ class PurchaseDetailsDialog(QDialog):
             return
         try:
             amount, method, reference = dialog.values()
+            key = self._payment_intent.for_payload({
+                "compra": self.purchase_id, "importe": amount, "metodo": method,
+                "referencia": reference})
+            self.payment_button.setEnabled(False)
             self.procurement_service.register_supplier_payment(
-                self.purchase_id, amount, method=method, reference=reference
+                self.purchase_id, amount, method=method, reference=reference,
+                idempotency_key=key,
             )
+            self._payment_intent.complete()
             self.changed = True
             self._refresh()
         except (ValueError, ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo registrar el pago", str(error))
+        finally:
+            self.payment_button.setEnabled(True)
 
     def _sync_reverse(self) -> None:
         row = self.payments_table.currentRow()
@@ -661,11 +672,17 @@ class PurchaseDetailsDialog(QDialog):
         if not accepted:
             return
         try:
-            self.procurement_service.reverse_supplier_payment(payment_id, reason=reason)
+            key = self._reverse_intent.for_payload({"pago": payment_id, "motivo": reason})
+            self.reverse_button.setEnabled(False)
+            self.procurement_service.reverse_supplier_payment(
+                payment_id, reason=reason, idempotency_key=key)
+            self._reverse_intent.complete()
             self.changed = True
             self._refresh()
         except (ServiceError, sqlite3.Error) as error:
             QMessageBox.warning(self, "No se pudo revertir el pago", str(error))
+        finally:
+            self._sync_reverse()
 
 
 class PurchasePage(QWidget):

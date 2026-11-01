@@ -6,6 +6,7 @@ import sqlite3
 from dragontech_manager.database.transactions import atomic
 from dragontech_manager.repositories.inventory import InventoryRepository
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
+from . import idempotency
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
 _SKU_RE = re.compile(r"^[A-Z0-9][A-Z0-9._/-]{0,49}$")
@@ -163,15 +164,22 @@ class InventoryService:
         return self.repository.stock_summary()
 
     def adjust_stock(self, product_id: int, quantity_delta: int, *,
-                     unit_cost_cop: int, reason: str) -> dict:
+                     unit_cost_cop: int, reason: str, idempotency_key: str) -> dict:
         product_id = positive_id(product_id, "El producto")
         if isinstance(quantity_delta, bool) or not isinstance(quantity_delta, int) or quantity_delta == 0 or abs(quantity_delta) > _MAX_INTEGER:
             raise ValidationError("El ajuste debe ser una cantidad entera distinta de cero.")
         unit_cost_cop = nonnegative_cop(unit_cost_cop, "El costo histórico")
         reason_value = required_text(reason, "El motivo del ajuste")
+        key = idempotency.validate_key(idempotency_key)
+        request_fp = idempotency.fingerprint({
+            "op": "ajuste_inventario", "producto_id": product_id, "delta": quantity_delta,
+            "costo_cop": unit_cost_cop, "motivo": reason_value})
         timestamp, _ = timestamp_and_business_year()
         try:
             with atomic(self.connection):
+                prior = self.repository.get_movement_by_key(key)
+                if idempotency.is_replay(prior, request_fp):
+                    return prior
                 stock = self.repository.stock_and_reserved(product_id)
                 if stock is None:
                     raise NotFoundError("No se encontró el producto que se quiere ajustar.")
@@ -181,16 +189,23 @@ class InventoryService:
                 return self.repository.add_movement(
                     product_id=product_id, delta=quantity_delta, cost_cop=unit_cost_cop,
                     kind="ajuste", created_utc=timestamp, reason=reason_value,
+                    idempotency_key=key, request_fingerprint=request_fp,
                 )
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
 
-    def reverse_movement(self, movement_id: int, *, reason: str) -> dict:
+    def reverse_movement(self, movement_id: int, *, reason: str, idempotency_key: str) -> dict:
         movement_id = positive_id(movement_id, "El movimiento")
         reason_value = required_text(reason, "El motivo de reversión")
+        key = idempotency.validate_key(idempotency_key)
+        request_fp = idempotency.fingerprint({
+            "op": "reversion_movimiento", "movimiento_id": movement_id, "motivo": reason_value})
         timestamp, _ = timestamp_and_business_year()
         try:
             with atomic(self.connection):
+                prior = self.repository.get_movement_by_key(key)
+                if idempotency.is_replay(prior, request_fp):
+                    return prior
                 original = self.repository.get_movement(movement_id)
                 if original is None:
                     raise NotFoundError("No se encontró el movimiento que se quiere corregir.")
@@ -205,6 +220,7 @@ class InventoryService:
                     cost_cop=original["costo_unitario_historico_cop"], kind="reversion",
                     created_utc=timestamp, reason=reason_value,
                     reverses_movement_id=movement_id,
+                    idempotency_key=key, request_fingerprint=request_fp,
                 )
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error

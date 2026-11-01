@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from uuid import uuid4
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -34,8 +35,7 @@ class InventoryRefreshUiTests(unittest.TestCase):
             suggested_price_cop=2_000,
         )
         self.inventory.adjust_stock(
-            self.product["id"], 5, unit_cost_cop=1_000, reason="Carga inicial"
-        )
+            self.product["id"], 5, unit_cost_cop=1_000, reason="Carga inicial", idempotency_key=uuid4().hex)
 
     def _row_for_sku(self, page) -> int:
         for row in range(page.products.table.rowCount()):
@@ -72,8 +72,7 @@ class InventoryRefreshUiTests(unittest.TestCase):
         self.window._navigate("inventory")
         page = self.window.pages["inventory"]
         self.inventory.adjust_stock(
-            self.product["id"], 4, unit_cost_cop=1_000, reason="Entrada posterior"
-        )
+            self.product["id"], 4, unit_cost_cop=1_000, reason="Entrada posterior", idempotency_key=uuid4().hex)
         page.refresh()
         row = self._row_for_sku(page)
         self.assertEqual(page.products.table.item(row, 5).text(), "9")
@@ -96,8 +95,7 @@ class InventoryRefreshUiTests(unittest.TestCase):
 
     def test_reverse_button_stays_enabled_for_manual_adjustments(self) -> None:
         movement = self.inventory.adjust_stock(
-            self.product["id"], 1, unit_cost_cop=1_000, reason="Ajuste corregible"
-        )
+            self.product["id"], 1, unit_cost_cop=1_000, reason="Ajuste corregible", idempotency_key=uuid4().hex)
         self.window._navigate("inventory")
         page = self.window.pages["inventory"]
         dialog = ProductDetailDialog(self.inventory, self.product["id"], page)

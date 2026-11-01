@@ -1,6 +1,7 @@
 """Pruebas aisladas de servicios y repositorios con SQLite en memoria."""
 
 import unittest
+from uuid import uuid4
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -645,7 +646,7 @@ class ServiceTests(unittest.TestCase):
         )
 
         prod = inv_svc.create_product(sku="ISO-PART", name="Pieza aislada", unit_cost_cop=5_000, suggested_price_cop=10_000)
-        inv_svc.adjust_stock(prod["id"], 10, unit_cost_cop=5_000, reason="Stock")
+        inv_svc.adjust_stock(prod["id"], 10, unit_cost_cop=5_000, reason="Stock", idempotency_key=uuid4().hex)
         sale = sales_svc.create_sale(
             customer["id"],
             [{"description": "Pieza aislada", "quantity": 1, "unit_price_cop": 10_000, "product_id": prod["id"]}],
