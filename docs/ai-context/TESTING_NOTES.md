@@ -5,7 +5,7 @@ source .venv/bin/activate
 PYTHONPATH=src QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests
 PYTHONPATH=src python -m unittest tests.test_payment_methods   # Entrega 1
 ```
-- Última ejecución completa: 2026-10-31, 162 pruebas OK (Entrega 2). `PYTHONPATH=src python -m unittest tests.test_idempotency` para la entrega.
+- Última ejecución completa: 2026-10-31, 166 pruebas OK (Entrega 3). `PYTHONPATH=src python -m unittest tests.test_idempotency` para la entrega.
 - Críticas por módulo: pagos (`test_sales`, `test_services`, `test_inventory`), esquema/migraciones (`test_database_schema`, `test_payment_methods`), respaldos (`test_backup`).
 - Validación manual de UI pendiente: diálogos de pago de venta, orden y compra con combos de catálogo.
 
@@ -15,3 +15,6 @@ Sobre copia de la base real (v7, original intacta, sha256 verificado): migra a v
 ## Migración 0009 (2026-10-31)
 Copia de la base real (v8): migra a v9, segunda ejecución no reaplica, tablas conservadas, filas históricas con clave NULL, integrity_check ok, foreign_key_check vacío, ajuste idempotente probado en la copia; base nueva v9. Original solo leída (modo ro).
 - UI pendiente de validación visual: ajuste/reversión de inventario y pago/reversión de proveedor (botón se deshabilita durante el envío).
+
+## Migración 0011A (2026-10-31)
+Copia de la base real (v9): migra a 11, no reaplica, 5 órdenes con importes/pagado/saldo idénticos antes y después (v_saldos_ordenes, list_orders y v_ordenes_importes), tablas conservadas, integrity ok, fk vacío; base nueva v11. Original intacta (sha256). Sin cambio visible esperado en UI: comprobar listado de órdenes y detalle/saldos.

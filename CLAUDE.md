@@ -276,3 +276,10 @@ The objective is to deliver a reliable DragonTech Manager 1.0.
 - Avoid repeatedly asking the user for information already documented.
 - At the beginning of a new session, briefly state the current task and relevant project status.
 - Keep session summaries concise and actionable.
+
+### Git Efficiency
+- Do not repeat Git status checks at the beginning of every task or delivery.
+- Treat the last confirmed commit as the baseline for the next delivery.
+- Inspect Git only when necessary to detect unexpected changes, conflicts, or potential data loss.
+- Never repeat checks already completed in the current session without a concrete reason.
+- Keep Git operations minimal and avoid unnecessary token consumption.

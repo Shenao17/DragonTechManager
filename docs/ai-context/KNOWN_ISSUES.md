@@ -4,7 +4,6 @@
 - I1–I3: guarda de venta cancelada ineficaz; `v_saldos_ventas` ignora devoluciones/crédito.
 - I4: `pagos_clientes` sin `huella_solicitud` (la comparación sigue campo a campo en servicios de venta/orden). I13: claves de pagos de cliente y ventas aún viven en memoria de la UI (sin `solicitudes_operacion` persistente). I5/Entrega 2: resuelto para pagos de proveedor y ajustes/reversiones (idempotencia); sigue pendiente el guard de estado de compra a nivel DB.
 - I9: guard de reversión de inventario no cubre procedencias nuevas (devolución).
-- I10: extras de órdenes calculados en 3 sitios.
 - I8/P6: venta vinculada a `armado_pc_id` sin flujo.
 
 ## Pendientes de decisión
@@ -21,3 +20,7 @@
 - Claves/huella son NULL en filas históricas; el servicio las exige en operaciones nuevas, la BD solo garantiza unicidad y que clave y huella vayan juntas (inserciones SQL directas sin clave siguen permitidas).
 - Movimientos de inventario generados por compras/ventas/órdenes no llevan clave (su idempotencia depende de su operación origen).
 - API cambiada: `adjust_stock`, `reverse_movement`, `register_supplier_payment`, `reverse_supplier_payment` exigen `idempotency_key`.
+
+## Notas Entrega 3
+- Hueco de numeración: existe 0011 sin 0010. Seguro porque 0010 no depende de 0011A ni lo toca; si se añade, se aplicará tras 0011 en bases ya migradas.
+- `v_saldos_ordenes` no incluye aún `saldo_favor_aplicado_cop` (requiere ledger de 0010).

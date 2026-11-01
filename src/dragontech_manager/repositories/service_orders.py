@@ -60,6 +60,7 @@ class ServiceOrderRepository:
                       e.serial AS equipo_serial, propietario.nombre AS propietario_nombre,
                       s.importe_acordado_cop, s.pagado_neto_cop, s.saldo_pendiente_cop
                FROM ordenes_servicio o
+               JOIN v_ordenes_importes i ON i.orden_id = o.id
                JOIN clientes c ON c.id = o.cliente_id
                JOIN equipos e ON e.id = o.equipo_id
                JOIN clientes propietario ON propietario.id = e.cliente_id
@@ -230,16 +231,9 @@ class ServiceOrderRepository:
         rows = self.connection.execute(
             """SELECT o.*, c.nombre AS cliente_nombre, e.codigo AS equipo_codigo,
                       e.tipo AS equipo_tipo,
-                      o.importe_inicial_cop + COALESCE((
-                          SELECT SUM(s.importe_propuesto_cop)
-                          FROM servicios_adicionales s
-                          JOIN decisiones_adicional d ON d.servicio_adicional_id = s.id
-                          WHERE s.orden_id = o.id AND d.decision = 'aprobado'
-                            AND d.id = (SELECT d2.id FROM decisiones_adicional d2
-                                        WHERE d2.servicio_adicional_id = s.id
-                                        ORDER BY d2.decidido_en_utc DESC, d2.id DESC LIMIT 1)
-                      ), 0) AS importe_acordado_cop
+                      i.importe_acordado_cop
                FROM ordenes_servicio o
+               JOIN v_ordenes_importes i ON i.orden_id = o.id
                JOIN clientes c ON c.id = o.cliente_id
                JOIN equipos e ON e.id = o.equipo_id
                WHERE (? IS NULL OR o.estado = ?)

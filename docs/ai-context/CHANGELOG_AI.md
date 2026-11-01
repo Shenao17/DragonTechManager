@@ -13,3 +13,8 @@
 - Servicios/repositorios de inventario y compras: reintento con misma clave+huella devuelve la fila original; otra huella → `ConflictError` sin escrituras; la búsqueda ocurre dentro de `BEGIN IMMEDIATE`.
 - UI (ajuste, reversión de movimiento, pago y reversión de proveedor): `IntentKey` por intención, botones deshabilitados durante el envío.
 - Pruebas: `tests/test_idempotency.py` (10, incl. concurrencia con 6 hilos y conexiones separadas); llamadas existentes actualizadas con clave; versión esperada 9.
+
+## 2026-10-31 — Fase 1 · Entrega 3 (0011 parte A)
+- Migración `0011_canonical_order_totals`: vista `v_ordenes_importes` (`importe_inicial_cop`, `extras_aprobados_cop`, `importe_acordado_cop`); `v_saldos_ordenes` recreada sobre ella (mismas columnas); triggers de sobrepago de orden, reducción de importe inicial y rechazo de adicional recreados sobre la vista (se elimina el self-join redundante).
+- `ServiceOrderRepository.list_orders` usa `v_ordenes_importes`.
+- Pruebas: `tests/test_order_totals.py` (equivalencia con la fórmula previa, saldos, reglas de triggers); versión esperada de esquema 11.
