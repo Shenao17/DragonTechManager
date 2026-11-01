@@ -17,7 +17,6 @@ from .proposals import ProposalPage
 
 _SALE_STATES = {"abierta": "Pendiente de pago", "parcial": "Pago parcial",
                 "completada": "Pagada", "cancelada": "Cancelada"}
-_PAYMENT_METHODS = ("Efectivo", "Transferencia", "Tarjeta", "Otro")
 
 
 def _integer(text: str, label: str, *, positive: bool = False) -> int:
@@ -244,7 +243,7 @@ class SaleDialog(QDialog):
 
 
 class PaymentDialog(QDialog):
-    def __init__(self, sale: dict, parent=None) -> None:
+    def __init__(self, sale: dict, methods: list[dict], parent=None) -> None:
         super().__init__(parent)
         self.sale = sale
         self.idempotency_key = uuid4().hex
@@ -256,7 +255,8 @@ class PaymentDialog(QDialog):
         form = QFormLayout()
         self.amount = QLineEdit(str(sale["saldo_pendiente_cop"]))
         self.method = QComboBox()
-        self.method.addItems(_PAYMENT_METHODS)
+        for method in methods:
+            self.method.addItem(method["nombre"], method["id"])
         self.reference = QLineEdit()
         form.addRow("Importe (COP) *", self.amount)
         form.addRow("Medio de pago *", self.method)
@@ -272,9 +272,12 @@ class PaymentDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def payment_values(self) -> tuple[int, str, str]:
+    def payment_values(self) -> tuple[int, int, str]:
+        method_id = self.method.currentData()
+        if method_id is None:
+            raise ValueError("El medio de pago es obligatorio.")
         return (_integer(self.amount.text(), "El importe", positive=True),
-                self.method.currentText(), self.reference.text().strip())
+                method_id, self.reference.text().strip())
 
     def _validate(self) -> None:
         try:
@@ -376,7 +379,7 @@ class SaleDetailsDialog(QDialog):
         )
 
     def _payment(self) -> None:
-        dialog = PaymentDialog(self.sale, self)
+        dialog = PaymentDialog(self.sale, self.service.methods.list_methods("cliente"), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -387,7 +390,7 @@ class SaleDetailsDialog(QDialog):
                 f"Venta: {self.sale['codigo']} · {self.sale['cliente_nombre']}\n"
                 f"Pago: {format_cop(amount)}\nTotal previamente recibido: {format_cop(self.sale['pagado_neto_cop'])}\n"
                 f"Saldo anterior: {format_cop(self.sale['saldo_pendiente_cop'])}\nSaldo resultante: {format_cop(new_balance)}\n"
-                f"Medio: {method} · Referencia: {reference or '—'}",
+                f"Medio: {dialog.method.currentText()} · Referencia: {reference or '—'}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )

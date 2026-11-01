@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from dragontech_manager.database.transactions import atomic
 from dragontech_manager.repositories.inventory import InventoryRepository
 from dragontech_manager.repositories.procurement import ProcurementRepository
+from dragontech_manager.business_date import business_date_from_utc
+from .payment_methods import PaymentMethodService
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
@@ -20,6 +22,7 @@ class ProcurementService:
         self.connection = connection
         self.repository = ProcurementRepository(connection)
         self.inventory = InventoryRepository(connection)
+        self.methods = PaymentMethodService(connection)
 
     @staticmethod
     def _calendar_date(value: object | None, label: str) -> str:
@@ -193,12 +196,12 @@ class ProcurementService:
             raise translate_integrity_error(error) from error
 
     def register_supplier_payment(self, purchase_id: int, amount_cop: int, *,
-                                  method: str, reference: str = "") -> dict:
+                                  method: str | int, reference: str = "") -> dict:
         purchase_id = positive_id(purchase_id, "La compra")
         amount_cop = nonnegative_cop(amount_cop, "El pago")
         if amount_cop <= 0:
             raise ValidationError("El pago debe ser mayor que cero.")
-        method_value = required_text(method, "El medio de pago")
+        method_row = self.methods.resolve(method, "proveedor")
         reference_value = optional_text(reference, "La referencia", none_as_empty=True)
         timestamp, _ = timestamp_and_business_year()
         try:
@@ -212,7 +215,9 @@ class ProcurementService:
                     raise ValidationError("El pago supera el saldo pendiente de la compra.")
                 return self.repository.add_supplier_payment(
                     purchase_id=purchase_id, amount_cop=amount_cop,
-                    method=method_value, reference=reference_value, timestamp_utc=timestamp,
+                    method=method_row["nombre"], method_id=method_row["id"],
+                    reference=reference_value, timestamp_utc=timestamp,
+                    business_date=business_date_from_utc(timestamp),
                 )
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error
@@ -232,6 +237,7 @@ class ProcurementService:
                     raise ConflictError("Este pago ya tiene una reversión registrada.")
                 return self.repository.reverse_supplier_payment(
                     original, reason=reason_value, timestamp_utc=timestamp,
+                    business_date=business_date_from_utc(timestamp),
                 )
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error

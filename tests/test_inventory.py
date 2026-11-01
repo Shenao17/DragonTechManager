@@ -32,7 +32,7 @@ class InventoryProcurementTests(unittest.TestCase):
         )
 
     def test_migration_six_adds_fields_and_guards_stock(self) -> None:
-        self.assertEqual(self.version, 7)
+        self.assertEqual(self.version, 8)
         product_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(productos)")}
         supplier_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(proveedores)")}
         detail_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(compra_detalles)")}
@@ -42,8 +42,8 @@ class InventoryProcurementTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.connection.execute(
                 """INSERT INTO movimientos_inventario
-                   (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo, creado_en_utc, motivo)
-                   VALUES (?, -1, 1000, 'ajuste', '2026-10-24T15:30:00Z', 'prueba')""",
+                   (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo, creado_en_utc, motivo, fecha_negocio)
+                   VALUES (?, -1, 1000, 'ajuste', '2026-10-24T15:30:00Z', 'prueba', '2026-10-24')""",
                 (self.product["id"],),
             )
         self.connection.execute(
@@ -57,8 +57,8 @@ class InventoryProcurementTests(unittest.TestCase):
             self.connection.execute(
                 """INSERT INTO movimientos_inventario
                    (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                    compra_detalle_id, creado_en_utc)
-                   VALUES (?, 1, 1000, 'compra', 1, '2026-10-24T15:30:00Z')""",
+                    compra_detalle_id, creado_en_utc, fecha_negocio)
+                   VALUES (?, 1, 1000, 'compra', 1, '2026-10-24T15:30:00Z', '2026-10-24')""",
                 (self.product["id"],),
             )
 
@@ -91,7 +91,7 @@ class InventoryProcurementTests(unittest.TestCase):
                     "INSERT INTO compra_detalles (compra_id, producto_id, cantidad, costo_unitario_historico_cop) VALUES (1, 1, 2, 8000)"
                 )
                 connection.commit()
-                self.assertEqual(migrate(connection, migrations), 7)
+                self.assertEqual(migrate(connection, migrations), 8)
                 self.assertEqual(connection.execute("SELECT nombre FROM productos WHERE id=1").fetchone()[0], "Producto anterior")
                 self.assertEqual(connection.execute("SELECT cantidad FROM compra_detalles WHERE id=1").fetchone()[0], 2)
                 self.assertEqual(connection.execute("SELECT descripcion_historica FROM compra_detalles WHERE id=1").fetchone()[0], "")
@@ -193,8 +193,8 @@ class InventoryProcurementTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.connection.execute(
                 """INSERT INTO movimientos_inventario
-                   (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo, creado_en_utc, motivo)
-                   VALUES (?, -2, 100000, 'ajuste', ?, 'Acceso SQL directo')""", (self.product["id"], utc)
+                   (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo, creado_en_utc, motivo, fecha_negocio)
+                   VALUES (?, -2, 100000, 'ajuste', ?, 'Acceso SQL directo', '2026-10-24')""", (self.product["id"], utc)
             )
         self.assertEqual(self.inventory.get_product(self.product["id"])["disponible"], 1)
 

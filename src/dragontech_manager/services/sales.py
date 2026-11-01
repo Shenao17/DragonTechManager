@@ -11,6 +11,8 @@ from dragontech_manager.database.transactions import atomic
 from dragontech_manager.repositories.inventory import InventoryRepository
 from dragontech_manager.repositories.proposals import ProposalRepository
 from dragontech_manager.repositories.sales import SalesRepository
+from dragontech_manager.business_date import business_date_from_utc
+from .payment_methods import PaymentMethodService
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
@@ -29,6 +31,7 @@ class SalesService:
         self.sales = SalesRepository(connection)
         self.inventory = InventoryRepository(connection)
         self.proposals = ProposalRepository(connection)
+        self.methods = PaymentMethodService(connection)
 
     @staticmethod
     def _key(value: object) -> str:
@@ -246,13 +249,13 @@ class SalesService:
                                      date_from=date_from, date_to=date_to,
                                      limit=limit, offset=offset)
 
-    def register_payment(self, sale_id: int, amount_cop: int, *, method: str,
+    def register_payment(self, sale_id: int, amount_cop: int, *, method: str | int,
                          idempotency_key: str, reference: str = "") -> dict:
         sale_id = positive_id(sale_id, "La venta")
         amount_cop = nonnegative_cop(amount_cop, "El pago")
         if amount_cop <= 0:
             raise ValidationError("El pago debe ser mayor que cero.")
-        method_value = required_text(method, "El medio de pago")
+        method_row = self.methods.resolve(method, "cliente")
         reference_value = optional_text(reference, "La referencia", none_as_empty=True)
         key = self._key(idempotency_key)
         timestamp, _ = timestamp_and_business_year()
@@ -261,7 +264,8 @@ class SalesService:
                 prior = self.sales.get_payment_by_key(key)
                 if prior:
                     if (prior["venta_id"] != sale_id or prior["importe_cop"] != amount_cop
-                            or prior["metodo"] != method_value or prior["referencia"] != reference_value
+                            or prior["metodo_pago_id"] != method_row["id"]
+                            or prior["referencia"] != reference_value
                             or prior["tipo"] != "recibo"):
                         raise ConflictError("La clave de reintento ya se usó con otro pago.")
                     return {"pago": prior, "venta": self.get_sale(sale_id), "repetido": True}
@@ -273,8 +277,9 @@ class SalesService:
                 if amount_cop > sale["saldo_pendiente_cop"]:
                     raise ValidationError("El pago supera el saldo pendiente de la venta.")
                 payment = self.sales.create_payment(
-                    sale_id=sale_id, amount_cop=amount_cop, method=method_value,
-                    reference=reference_value or "", timestamp_utc=timestamp,
+                    sale_id=sale_id, amount_cop=amount_cop, method=method_row["nombre"],
+                    method_id=method_row["id"], reference=reference_value or "",
+                    timestamp_utc=timestamp, business_date=business_date_from_utc(timestamp),
                     idempotency_key=key,
                 )
                 return {"pago": payment, "venta": self.get_sale(sale_id), "repetido": False}
@@ -294,8 +299,9 @@ class SalesService:
                     raise ConflictError("Solo se pueden revertir pagos originales.")
                 if self.sales.payment_reversed(payment_id):
                     raise ConflictError("Este pago ya tiene una reversión registrada.")
-                reversal = self.sales.reverse_payment(original, reason=reason_value,
-                                                       timestamp_utc=timestamp)
+                reversal = self.sales.reverse_payment(
+                    original, reason=reason_value, timestamp_utc=timestamp,
+                    business_date=business_date_from_utc(timestamp))
                 return {"pago": reversal, "venta": self.get_sale(original["venta_id"])}
         except sqlite3.IntegrityError as error:
             raise translate_integrity_error(error) from error

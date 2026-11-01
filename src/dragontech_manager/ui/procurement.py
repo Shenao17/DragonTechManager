@@ -468,7 +468,7 @@ class PurchaseDialog(QDialog):
 
 
 class PaymentDialog(QDialog):
-    def __init__(self, purchase: dict, parent=None) -> None:
+    def __init__(self, purchase: dict, methods: list[dict], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Registrar pago · Compra #{purchase['id']}")
         self.setMinimumSize(560, 420)
@@ -480,8 +480,9 @@ class PaymentDialog(QDialog):
         ))
         form = QFormLayout()
         self.amount = QLineEdit(str(purchase["saldo_pendiente_cop"]))
-        self.method = QLineEdit()
-        self.method.setPlaceholderText("Transferencia, efectivo…")
+        self.method = QComboBox()
+        for method in methods:
+            self.method.addItem(method["nombre"], method["id"])
         self.reference = QLineEdit()
         form.addRow("Importe (COP) *", self.amount)
         form.addRow("Medio de pago *", self.method)
@@ -498,10 +499,10 @@ class PaymentDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[int, str, str]:
+    def values(self) -> tuple[int, int, str]:
         amount = _integer_value(self.amount.text(), "El pago", allow_zero=False)
-        method = self.method.text().strip()
-        if not method:
+        method = self.method.currentData()
+        if method is None:
             raise ValueError("El medio de pago es obligatorio.")
         return amount, method, self.reference.text().strip()
 
@@ -627,7 +628,9 @@ class PurchaseDetailsDialog(QDialog):
             QMessageBox.warning(self, "No se pudo cambiar la compra", str(error))
 
     def _payment(self) -> None:
-        dialog = PaymentDialog(self.purchase, self)
+        dialog = PaymentDialog(
+            self.purchase, self.procurement_service.methods.list_methods("proveedor"), self
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:

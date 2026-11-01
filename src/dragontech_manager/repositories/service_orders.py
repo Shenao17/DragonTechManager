@@ -287,16 +287,19 @@ class ServiceOrderRepository:
         order_id: int,
         amount_cop: int,
         method: str,
+        method_id: int,
         reference: str,
         timestamp_utc: str,
+        business_date: str,
         idempotency_key: str,
     ) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_clientes
-               (orden_id, importe_cop, tipo, metodo, referencia, registrado_en_utc,
-                clave_idempotencia)
-               VALUES (?, ?, 'recibo', ?, ?, ?, ?) RETURNING *""",
-            (order_id, amount_cop, method, reference, timestamp_utc, idempotency_key),
+               (orden_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
+                registrado_en_utc, fecha_negocio, clave_idempotencia)
+               VALUES (?, ?, 'recibo', ?, ?, ?, ?, ?, ?) RETURNING *""",
+            (order_id, amount_cop, method, method_id, reference, timestamp_utc,
+             business_date, idempotency_key),
         ).fetchone())
     def get_payment(self, payment_id: int) -> dict | None:
         return row_dict(self.connection.execute(
@@ -317,12 +320,14 @@ class ServiceOrderRepository:
         *,
         reason: str,
         timestamp_utc: str,
+        business_date: str,
     ) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_clientes
-               (orden_id, importe_cop, tipo, metodo, referencia, registrado_en_utc,
-                reversa_pago_id, motivo)
-               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?) RETURNING *""",
+               (orden_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
+                registrado_en_utc, fecha_negocio, reversa_pago_id, motivo)
+               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (original["orden_id"], original["importe_cop"], original["metodo"],
-             original["referencia"], timestamp_utc, original["id"], reason),
+             original["metodo_pago_id"], original["referencia"], timestamp_utc,
+             business_date, original["id"], reason),
         ).fetchone())

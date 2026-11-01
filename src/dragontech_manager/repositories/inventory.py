@@ -2,6 +2,7 @@
 
 import sqlite3
 
+from ..business_date import business_date_from_utc
 from ._rows import row_dict, rows_dict
 
 
@@ -105,10 +106,12 @@ class InventoryRepository:
         return row_dict(self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                compra_detalle_id, venta_detalle_id, reversa_movimiento_id, creado_en_utc, motivo)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+                compra_detalle_id, venta_detalle_id, reversa_movimiento_id, creado_en_utc, motivo,
+                fecha_negocio)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (product_id, delta, cost_cop, kind, purchase_line_id,
-             sale_line_id, reverses_movement_id, created_utc, reason),
+             sale_line_id, reverses_movement_id, created_utc, reason,
+             business_date_from_utc(created_utc)),
         ).fetchone())
 
     def reserve_sale_line(self, *, product_id: int, sale_line_id: int,

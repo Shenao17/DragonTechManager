@@ -9,6 +9,8 @@ from dragontech_manager.database.transactions import atomic
 from dragontech_manager.repositories.customers import CustomerRepository
 from dragontech_manager.repositories.equipment import EquipmentRepository
 from dragontech_manager.repositories.service_orders import ServiceOrderRepository
+from dragontech_manager.business_date import business_date_from_utc
+from .payment_methods import PaymentMethodService
 from ._common import nonnegative_cop, optional_text, pagination, positive_id, required_text, timestamp_and_business_year
 from .errors import ConflictError, NotFoundError, ValidationError, translate_integrity_error
 
@@ -37,6 +39,7 @@ class ServiceOrderService:
         self.customers = CustomerRepository(connection)
         self.equipment = EquipmentRepository(connection)
         self.orders = ServiceOrderRepository(connection)
+        self.methods = PaymentMethodService(connection)
 
     def open_service_order(
         self,
@@ -407,7 +410,7 @@ class ServiceOrderService:
         order_id: int,
         amount_cop: int,
         *,
-        method: str,
+        method: str | int,
         idempotency_key: str,
         reference: str = "",
     ) -> dict:
@@ -415,7 +418,7 @@ class ServiceOrderService:
         amount = nonnegative_cop(amount_cop, "El pago")
         if amount <= 0:
             raise ValidationError("El pago debe ser mayor que cero.")
-        method_value = required_text(method, "El medio de pago")
+        method_row = self.methods.resolve(method, "cliente")
         reference_value = optional_text(reference, "La referencia", none_as_empty=True)
         key = self._key(idempotency_key)
         timestamp, _ = timestamp_and_business_year()
@@ -426,7 +429,7 @@ class ServiceOrderService:
                     if (
                         prior["orden_id"] != order_id
                         or prior["importe_cop"] != amount
-                        or prior["metodo"] != method_value
+                        or prior["metodo_pago_id"] != method_row["id"]
                         or prior["referencia"] != reference_value
                         or prior["tipo"] != "recibo"
                     ):
@@ -446,9 +449,11 @@ class ServiceOrderService:
                 payment = self.orders.create_payment(
                     order_id=order_id,
                     amount_cop=amount,
-                    method=method_value,
+                    method=method_row["nombre"],
+                    method_id=method_row["id"],
                     reference=reference_value or "",
                     timestamp_utc=timestamp,
+                    business_date=business_date_from_utc(timestamp),
                     idempotency_key=key,
                 )
                 new_balance = self.orders.financial_summary(order_id)
@@ -469,7 +474,8 @@ class ServiceOrderService:
                 if self.orders.payment_reversed(payment_id):
                     raise ConflictError("Este pago ya tiene una reversión registrada.")
                 reversal = self.orders.reverse_payment(
-                    original, reason=reason_value, timestamp_utc=timestamp
+                    original, reason=reason_value, timestamp_utc=timestamp,
+                    business_date=business_date_from_utc(timestamp),
                 )
                 new_balance = self.orders.financial_summary(original["orden_id"])
                 return {"pago": reversal, "balance": new_balance}

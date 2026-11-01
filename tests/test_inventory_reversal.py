@@ -132,8 +132,8 @@ class InventoryReversalGuardTests(unittest.TestCase):
         movement_id = self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                orden_repuesto_id, creado_en_utc, motivo)
-               VALUES (?, -2, 10000, 'orden', ?, ?, 'Salida por orden')""",
+                orden_repuesto_id, creado_en_utc, motivo, fecha_negocio)
+               VALUES (?, -2, 10000, 'orden', ?, ?, 'Salida por orden', '2026-10-24')""",
             (self.product["id"], spare_id, UTC),
         ).lastrowid
         self.connection.commit()
@@ -160,8 +160,8 @@ class InventoryReversalGuardTests(unittest.TestCase):
         movement_id = self.connection.execute(
             """INSERT INTO movimientos_inventario
                (producto_id, cantidad_delta, costo_unitario_historico_cop, tipo,
-                armado_componente_id, creado_en_utc, motivo)
-               VALUES (?, -1, 10000, 'armado', ?, ?, 'Salida por armado')""",
+                armado_componente_id, creado_en_utc, motivo, fecha_negocio)
+               VALUES (?, -1, 10000, 'armado', ?, ?, 'Salida por armado', '2026-10-24')""",
             (self.product["id"], component_id, UTC),
         ).lastrowid
         self.connection.commit()

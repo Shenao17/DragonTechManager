@@ -73,12 +73,15 @@ class ProcurementRepository:
         ).fetchall())
 
     def add_supplier_payment(self, *, purchase_id: int, amount_cop: int, method: str,
-                             reference: str, timestamp_utc: str) -> dict:
+                             method_id: int, reference: str, timestamp_utc: str,
+                             business_date: str) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_proveedores
-               (compra_id, importe_cop, tipo, metodo, referencia, registrado_en_utc)
-               VALUES (?, ?, 'pago', ?, ?, ?) RETURNING *""",
-            (purchase_id, amount_cop, method, reference, timestamp_utc),
+               (compra_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
+                registrado_en_utc, fecha_negocio)
+               VALUES (?, ?, 'pago', ?, ?, ?, ?, ?) RETURNING *""",
+            (purchase_id, amount_cop, method, method_id, reference, timestamp_utc,
+             business_date),
         ).fetchone())
 
     def get_supplier_payment(self, payment_id: int) -> dict | None:
@@ -91,14 +94,16 @@ class ProcurementRepository:
             "SELECT 1 FROM pagos_proveedores WHERE reversa_pago_id=?", (payment_id,)
         ).fetchone() is not None
 
-    def reverse_supplier_payment(self, original: dict, *, reason: str, timestamp_utc: str) -> dict:
+    def reverse_supplier_payment(self, original: dict, *, reason: str, timestamp_utc: str,
+                                 business_date: str) -> dict:
         return row_dict(self.connection.execute(
             """INSERT INTO pagos_proveedores
-               (compra_id, importe_cop, tipo, metodo, referencia, registrado_en_utc,
-                reversa_pago_id, motivo)
-               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?) RETURNING *""",
+               (compra_id, importe_cop, tipo, metodo, metodo_pago_id, referencia,
+                registrado_en_utc, fecha_negocio, reversa_pago_id, motivo)
+               VALUES (?, ?, 'reversion', ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (original["compra_id"], original["importe_cop"], original["metodo"],
-             original["referencia"], timestamp_utc, original["id"], reason),
+             original["metodo_pago_id"], original["referencia"], timestamp_utc,
+             business_date, original["id"], reason),
         ).fetchone())
 
     def list_supplier_payments(self, purchase_id: int) -> list[dict]:

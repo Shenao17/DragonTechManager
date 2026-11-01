@@ -29,14 +29,6 @@ from dragontech_manager.services.errors import ServiceError
 from .pages import format_cop, format_local_datetime
 from .widgets import build_table, set_cell
 
-_PAYMENT_METHODS = (
-    "Efectivo",
-    "Transferencia bancaria",
-    "Tarjeta de débito",
-    "Tarjeta de crédito",
-    "Otro",
-)
-
 _STATE_LABELS = {
     "recibida": "Recibida (pendiente)",
     "diagnostico": "Diagnóstico (pendiente)",
@@ -49,7 +41,7 @@ _STATE_LABELS = {
 
 
 class OrderPaymentDialog(QDialog):
-    def __init__(self, order: dict, parent=None) -> None:
+    def __init__(self, order: dict, methods: list[dict], parent=None) -> None:
         super().__init__(parent)
         self.order = order
         self.idempotency_key = uuid4().hex
@@ -83,7 +75,8 @@ class OrderPaymentDialog(QDialog):
             QRegularExpressionValidator(QRegularExpression(r"[0-9]{1,19}"), self.amount)
         )
         self.method = QComboBox()
-        self.method.addItems(_PAYMENT_METHODS)
+        for method in methods:
+            self.method.addItem(method["nombre"], method["id"])
         self.reference = QLineEdit()
         self.reference.setPlaceholderText("Comprobante, nro. de transacción, recibo (opcional)")
 
@@ -106,14 +99,16 @@ class OrderPaymentDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def payment_values(self) -> tuple[int, str, str]:
+    def payment_values(self) -> tuple[int, int, str]:
         text = self.amount.text().strip()
         if not text or not text.isdigit():
             raise ValueError("El importe debe ser un número entero mayor que cero.")
         amount = int(text)
         if amount <= 0:
             raise ValueError("El importe debe ser mayor que cero.")
-        method = self.method.currentText()
+        method = self.method.currentData()
+        if method is None:
+            raise ValueError("El medio de pago es obligatorio.")
         reference = self.reference.text().strip()
         return amount, method, reference
 
@@ -782,7 +777,9 @@ class OrderDetailDialog(QDialog):
         self.reverse_payment_button.setEnabled(can_reverse)
 
     def _register_payment(self) -> None:
-        dialog = OrderPaymentDialog(self.order, self)
+        dialog = OrderPaymentDialog(
+            self.order, self.service.methods.list_methods("cliente"), self
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -799,7 +796,7 @@ class OrderDetailDialog(QDialog):
                 f"Total pagado previamente: {format_cop(total_previo)}\n"
                 f"Saldo anterior: {format_cop(saldo_anterior)}\n"
                 f"Saldo resultante: {format_cop(nuevo_saldo)}\n"
-                f"Medio de pago: {method} · Referencia: {reference or '—'}\n\n"
+                f"Medio de pago: {dialog.method.currentText()} · Referencia: {reference or '—'}\n\n"
                 "¿Confirmas el registro del pago?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
